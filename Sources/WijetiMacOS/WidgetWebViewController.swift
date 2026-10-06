@@ -49,7 +49,9 @@ final class WidgetWebViewController: NSObject, WKScriptMessageHandler, WKNavigat
         ))
     }
 
-    func load(url: URL, in window: NSWindow) {
+    /// `window` is the desktop window (nil in the in-app preview, where mouse-event
+    /// toggling has no meaning — the preview is a normal view, not an overlay).
+    func load(url: URL, in window: NSWindow? = nil) {
         mainURL = url
         self.window = window
         webView.load(URLRequest(url: url))

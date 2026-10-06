@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WebKit
 import WijetiCore
 
 /// The onboarding surface: a browsable library of bundled widgets, drag-and-drop or
@@ -25,18 +26,125 @@ public final class WidgetLibraryWindow: NSObject, NSWindowDelegate {
             window.title = "Wijeti Widget Library"
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.isReleasedWhenClosed = false
-            window.setContentSize(NSSize(width: 760, height: 560))
+            window.setContentSize(NSSize(width: 1140, height: 640))
+            window.minSize = NSSize(width: 1040, height: 560)
             window.delegate = self
             self.window = window
         }
         model.reload()
+        model.autoSelectIfNeeded()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        model.resumePreview()
     }
 
+    /// Stops the private preview server (and its node process) when the window closes.
     public func windowWillClose(_ notification: Notification) {
         // Keep the window alive so reopening is instant; just give focus back to nothing.
+        // AppKit calls this on the main thread; hop explicitly for the actor check.
+        MainActor.assumeIsolated { model.stopPreview() }
         window?.orderOut(nil)
+    }
+
+    /// App-wide teardown: the preview server is an extra node process.
+    @MainActor
+    public func shutdown() {
+        model.stopPreview()
+    }
+
+    // MARK: - Verification hooks (used by `--verify-presets`)
+
+    /// Catalog ids in display order — the list `--verify-presets` walks.
+    @MainActor
+    public func bundledPresetIDs() -> [String] {
+        model.catalog.presets.map(\.id)
+    }
+
+    /// Selects a preset in the library, which starts/updates the preview for it.
+    @MainActor
+    public func selectPreset(id: String) {
+        guard let preset = model.catalog.presets.first(where: { $0.id == id }) else {
+            NSLog("verify: unknown preset %@", id)
+            return
+        }
+        model.select(preset)
+    }
+
+    /// Asks the preview page what it has rendered:
+    /// `found` (the preset's own widget element), an error table, the page title
+    /// (which carries `jserror:` for uncaught errors), and the visible text.
+    @MainActor
+    public func probePreview(
+        completion: @escaping (Result<(found: Bool, error: Bool, title: String, text: String), Error>) -> Void
+    ) {
+        let serverID = model.previewServerWidgetID ?? ""
+        let script = """
+        (function () {
+          var el = document.getElementById('\(serverID)');
+          if (!el) {
+            return JSON.stringify({found: false, error: false,
+              title: document.title, text: '', count: document.querySelectorAll('.widget').length});
+          }
+          return JSON.stringify({found: true,
+            // The server's ErrorDetails renders its code table with an *inline*
+            // `border-collapse` style; widget tables (e.g. the calendar grid) use
+            // emotion classes and carry no inline style, so this never false-positives.
+            error: !!el.querySelector('table[style*="border-collapse"]'),
+            title: document.title, text: (el.innerText || '').slice(0, 200), count: 1});
+        })()
+        """
+        model.previewController.webViewController.webView.evaluateJavaScript(script) { value, error in
+            DispatchQueue.main.async {
+                if let error {
+                    completion(.failure(error))
+                    return
+                }
+                guard let raw = value as? String,
+                      let data = raw.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else {
+                    completion(.failure(NSError(
+                        domain: "WijetiPreview",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "unreadable probe: \(value ?? "nil")"]
+                    )))
+                    return
+                }
+                completion(.success((
+                    found: json["found"] as? Bool ?? false,
+                    error: json["error"] as? Bool ?? false,
+                    title: json["title"] as? String ?? "",
+                    text: json["text"] as? String ?? ""
+                )))
+            }
+        }
+    }
+
+    /// Snapshots the preview web view (no Screen Recording permission needed —
+    /// it is an in-process `WKWebView` snapshot).
+    @MainActor
+    public func snapshotPreview(completion: @escaping (NSImage?) -> Void) {
+        model.previewController.webViewController.snapshot(completion: completion)
+    }
+
+    /// Renders the whole library window (including the preview pane) to an image.
+    @MainActor
+    public func snapshotWindow(completion: @escaping (NSImage?) -> Void) {
+        guard let view = window?.contentView else {
+            completion(nil)
+            return
+        }
+        let bounds = view.bounds
+        guard bounds.width > 0, bounds.height > 0,
+              let rep = view.bitmapImageRepForCachingDisplay(in: bounds)
+        else {
+            completion(nil)
+            return
+        }
+        view.cacheDisplay(in: bounds, to: rep)
+        let image = NSImage(size: bounds.size)
+        image.addRepresentation(rep)
+        completion(image)
     }
 }
 
@@ -59,7 +167,14 @@ public final class WidgetLibraryModel: ObservableObject {
     @Published public var busy = false
     /// Ids from the catalog that are already on disk, so their button reads "Installed".
     @Published public var installedPresetIDs: Set<String> = []
+    /// The preset shown in the preview pane.
+    @Published public var selectedPreset: Preset?
+    /// Live status line for the preview pane ("Starting preview…", errors, …).
+    @Published public var previewStatus = ""
+    /// True once the preview page has loaded; until then the pane shows the status.
+    @Published public var previewReady = false
 
+    let previewController: WidgetPreviewController
     private let host: HostApp
     private let importer: WidgetImporter
     private let presetsDirectory: URL
@@ -68,6 +183,53 @@ public final class WidgetLibraryModel: ObservableObject {
         self.host = host
         self.presetsDirectory = presetsDirectory
         self.importer = WidgetImporter(widgetDirectory: host.widgetDirectoryURL)
+        previewController = WidgetPreviewController(
+            platform: host.platform,
+            loginShell: { host.loginShell }
+        )
+        previewController.onStatus = { [weak self] text in
+            self?.previewStatus = text
+        }
+        previewController.onReadyChange = { [weak self] ready in
+            self?.previewReady = ready
+        }
+    }
+
+    // MARK: - Preview selection
+
+    /// Selects a preset and shows it in the preview pane. Nothing is installed.
+    public func select(_ preset: Preset) {
+        selectedPreset = preset
+        previewController.show(preset, from: presetsDirectory)
+    }
+
+    /// First run of the window: pick something so the pane is never dead space.
+    public func autoSelectIfNeeded() {
+        guard selectedPreset == nil, let first = catalog.presets.first else { return }
+        select(first)
+    }
+
+    /// Re-issues the current selection after a stop (the window was closed).
+    public func resumePreview() {
+        guard let preset = selectedPreset else { return }
+        previewController.show(preset, from: presetsDirectory)
+    }
+
+    public func stopPreview() {
+        previewController.stop()
+    }
+
+    /// The widget id the preview server derives from the selected preset's entry file
+    /// (mirrors `server/src/resolveWidget.js`), used to probe the rendered element.
+    public var previewServerWidgetID: String? {
+        guard let preset = selectedPreset else { return nil }
+        let base = presetsDirectory.appendingPathComponent(preset.id)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: base.path, isDirectory: &isDirectory) else {
+            return nil
+        }
+        let entry = isDirectory.boolValue ? base.appendingPathComponent(preset.entry) : base
+        return WidgetImporter.widgetID(for: entry, root: presetsDirectory)
     }
 
     public func reload() {
@@ -276,9 +438,11 @@ struct WidgetLibraryView: View {
             installedList
                 .frame(minWidth: 250, idealWidth: 280)
             libraryList
-                .frame(minWidth: 380)
+                .frame(minWidth: 360, idealWidth: 380)
+            previewPane
+                .frame(minWidth: 340, idealWidth: 380)
         }
-        .frame(minWidth: 720, minHeight: 520)
+        .frame(minWidth: 1040, minHeight: 560)
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             handleDrop(providers)
         }
@@ -473,6 +637,7 @@ struct WidgetLibraryView: View {
 
     private func presetRow(_ preset: Preset) -> some View {
         let installed = model.isInstalled(preset)
+        let selected = model.selectedPreset?.id == preset.id
         return HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(preset.title)
@@ -495,6 +660,113 @@ struct WidgetLibraryView: View {
             .controlSize(.small)
         }
         .padding(.vertical, 5)
+        .padding(.horizontal, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(selected ? Color.accentColor.opacity(0.16) : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { model.select(preset) }
+        .help("Preview \(preset.title)")
+    }
+
+    // Preview pane
+    private var previewPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Preview")
+                        .font(.headline)
+                    Spacer()
+                    if let preset = model.selectedPreset {
+                        Text(preset.category)
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.18)))
+                    }
+                }
+                if let preset = model.selectedPreset {
+                    Text(preset.title)
+                        .font(.title3.weight(.semibold))
+                    Text(preset.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if preset.source != "Wijeti" {
+                        Text("Source: \(preset.source)")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    HStack {
+                        Button(model.isInstalled(preset) ? "Installed" : "Install") {
+                            model.install(preset)
+                        }
+                        .disabled(model.isInstalled(preset))
+                        Spacer()
+                    }
+                    .padding(.top, 2)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            .padding(.bottom, 10)
+
+            ZStack {
+                // A wallpaper-ish backdrop so light-on-dark widgets read the way they
+                // will on the desktop.
+                LinearGradient(
+                    colors: [Color(red: 0.16, green: 0.17, blue: 0.22), Color(red: 0.07, green: 0.07, blue: 0.1)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                if model.selectedPreset == nil {
+                    VStack(spacing: 8) {
+                        Image(systemName: "cursor.arrow.rays")
+                            .font(.system(size: 26))
+                            .foregroundStyle(.white.opacity(0.5))
+                        Text("Pick a widget to see it live")
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(.white.opacity(0.8))
+                        Text("Nothing is installed until you hit Install.")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                } else if model.previewReady {
+                    PreviewWebView(controller: model.previewController.webViewController)
+                } else {
+                    VStack(spacing: 10) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.white)
+                        Text(model.previewStatus.isEmpty ? "Starting preview…" : model.previewStatus)
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(.white.opacity(0.08), lineWidth: 1)
+            )
+            .padding(.horizontal, 16)
+
+            HStack {
+                Text(model.previewStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                Text(model.selectedPreset == nil ? "" : "live preview")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+
+            Divider()
+        }
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
@@ -514,4 +786,14 @@ struct WidgetLibraryView: View {
         group.notify(queue: .main) { model.importDropped(urls) }
         return true
     }
+}
+
+/// Mounts the preview controller's web view into SwiftUI. The controller owns the view
+/// (it must survive window close/reopen), so `make`/`update` are no-ops beyond mounting.
+private struct PreviewWebView: NSViewRepresentable {
+    let controller: WidgetWebViewController
+
+    func makeNSView(context: Context) -> WKWebView { controller.webView }
+
+    func updateNSView(_ nsView: WKWebView, context: Context) {}
 }

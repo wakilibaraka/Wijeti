@@ -15,27 +15,48 @@ struct Options {
     var installPresets = false
     var showPreferences = false
     var showLibrary = false
+    /// `--verify-presets <dir>`: preview every bundled preset, write report + PNGs, exit.
+    var verifyPresetsDirectory: URL?
+    /// `--preview-preset <id>`: preselect a preset when the library opens.
+    var previewPresetID: String?
 
     init(arguments: [String]) {
         var index = 0
         while index < arguments.count {
             let flag = arguments[index]
             let value: String? = index + 1 < arguments.count ? arguments[index + 1] : nil
+            // Boolean flags consume only themselves; value flags consume the next
+            // argument too. (Advancing blindly by 2 made `--flag --other-flag` drop
+            // the second flag.)
+            var consumedValue = false
             switch flag {
             case "--server-dir" where value != nil:
                 serverDirectory = URL(fileURLWithPath: value!)
+                consumedValue = true
             case "--presets-dir" where value != nil:
                 presetsDirectory = URL(fileURLWithPath: value!)
+                consumedValue = true
             case "--widgets" where value != nil:
                 widgetDirectory = URL(fileURLWithPath: value!)
+                consumedValue = true
             case "--settings" where value != nil:
                 settingsDirectory = URL(fileURLWithPath: value!)
+                consumedValue = true
             case "--port" where value != nil:
                 port = Int(value!)
+                consumedValue = true
             case "--poll-interval" where value != nil:
                 pollInterval = Double(value!) ?? 1.0
+                consumedValue = true
             case "--snapshot-dir" where value != nil:
                 snapshotDirectory = URL(fileURLWithPath: value!)
+                consumedValue = true
+            case "--verify-presets" where value != nil:
+                verifyPresetsDirectory = URL(fileURLWithPath: value!)
+                consumedValue = true
+            case "--preview-preset" where value != nil:
+                previewPresetID = value!
+                consumedValue = true
             case "--exit-after-snapshot":
                 exitAfterSnapshot = true
             case "--install-presets":
@@ -47,7 +68,7 @@ struct Options {
             default:
                 break
             }
-            index += 2
+            index += consumedValue ? 2 : 1
         }
     }
 }
@@ -66,6 +87,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var appliedState = false
     private var pendingPreferences = false
     private var pendingLibrary = false
+    private var presetVerifier: PresetVerifier?
+    private var verifyStarted = false
 
     init(options: Options) {
         self.options = options
@@ -124,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if self.pendingLibrary {
                     self.pendingLibrary = false
                     self.library.show()
+                    self.libraryDidShow()
                 } else {
                     self.preferences.show()
                 }
@@ -158,13 +182,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let showLibrary = self.pendingLibrary
                 self.pendingPreferences = false
                 self.pendingLibrary = false
-                if showLibrary { self.library.show() } else { self.preferences.show() }
+                if showLibrary {
+                    self.library.show()
+                    self.libraryDidShow()
+                } else {
+                    self.preferences.show()
+                }
             }
+        }
+    }
+
+    /// Right after the library window is up: honour `--preview-preset`, and kick off
+    /// the `--verify-presets` walk once layout has settled.
+    private func libraryDidShow() {
+        if let id = options.previewPresetID {
+            library.selectPreset(id: id)
+        }
+        guard options.verifyPresetsDirectory != nil, !verifyStarted else { return }
+        verifyStarted = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            self?.runPresetVerification()
+        }
+    }
+
+    /// Walks every bundled preset through the preview pane, writes `report.txt` plus a
+    /// PNG per preset and of the whole window, then exits. Dev/CI flag.
+    private func runPresetVerification() {
+        guard let directory = options.verifyPresetsDirectory else { return }
+        let ids = library.bundledPresetIDs()
+        guard !ids.isEmpty else {
+            NSLog("verify: catalog is empty, nothing to check")
+            NSApp.terminate(nil)
+            return
+        }
+        let verifier = PresetVerifier(library: library, outputDirectory: directory)
+        presetVerifier = verifier
+        verifier.run(presetIDs: ids) { allPassed in
+            NSLog("preset verification %@", allPassed ? "passed" : "had failures")
+            NSApp.terminate(nil)
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         snapshotWork?.cancel()
+        library.shutdown()
         host.stop()
     }
 

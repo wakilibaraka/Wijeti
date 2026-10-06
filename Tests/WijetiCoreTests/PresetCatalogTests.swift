@@ -63,6 +63,66 @@ final class PresetCatalogTests: XCTestCase {
         )
         XCTAssertTrue(PresetCatalog.load(from: root).isEmpty)
     }
+
+    /// The bundled library must be internally consistent: every catalog row points at a
+    /// preset that exists in `Resources/presets` with its entry file, every on-disk
+    /// preset is catalogued, and ids/titles are unique. This is what stops a preset from
+    /// silently disappearing from the library or showing an "Add" button that cannot work.
+    func testCatalogMatchesPresetsDirectoryOnDisk() throws {
+        let presetsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // Tests/WijetiCoreTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // package root
+            .appendingPathComponent("Resources/presets")
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: presetsDirectory.path, isDirectory: &isDirectory),
+            "Resources/presets should exist next to the package"
+        )
+
+        let catalog = PresetCatalog.load(from: presetsDirectory)
+        XCTAssertFalse(catalog.presets.isEmpty, "the bundled catalog should not be empty")
+
+        var seenIDs = Set<String>()
+        var seenTitles = Set<String>()
+        for preset in catalog.presets {
+            XCTAssertTrue(preset.isUsable, "\(preset.id) is not usable")
+            XCTAssertTrue(seenIDs.insert(preset.id).inserted, "duplicate id \(preset.id)")
+            XCTAssertTrue(seenTitles.insert(preset.title).inserted, "duplicate title \(preset.title)")
+            // `PresetInstaller.entries` only picks up `.widget` folders and `.jsx` files.
+            XCTAssertTrue(
+                preset.id.hasSuffix(".widget") || preset.id.hasSuffix(".jsx"),
+                "\(preset.id) would be skipped by the preset installer"
+            )
+            XCTAssertFalse(preset.category.isEmpty, "\(preset.id) has no category")
+            XCTAssertFalse(preset.description.isEmpty, "\(preset.id) has no description")
+
+            let source = presetsDirectory.appendingPathComponent(preset.id)
+            var sourceIsDirectory: ObjCBool = false
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: source.path, isDirectory: &sourceIsDirectory),
+                "\(preset.id) is missing from Resources/presets"
+            )
+            if sourceIsDirectory.boolValue {
+                XCTAssertTrue(
+                    FileManager.default.fileExists(
+                        atPath: source.appendingPathComponent(preset.entry).path
+                    ),
+                    "\(preset.id): entry file \(preset.entry) is missing"
+                )
+            } else {
+                // A bare file preset: the entry is the file itself.
+                XCTAssertEqual(preset.entry, preset.id, "\(preset.id): bare file entry mismatch")
+            }
+        }
+
+        // Nothing on disk may be missing from the catalog either.
+        let onDisk = (try FileManager.default.contentsOfDirectory(atPath: presetsDirectory.path))
+            .filter { !$0.hasPrefix(".") && $0 != "Catalog.json" }
+        for name in onDisk {
+            XCTAssertTrue(seenIDs.contains(name), "\(name) exists on disk but is not in Catalog.json")
+        }
+    }
 }
 
 final class WidgetImporterTests: XCTestCase {
