@@ -1,0 +1,402 @@
+[
+  {
+    "category": "Clock",
+    "description": "AnalogClock CentralUS widget",
+    "entry": "AnalogClock-CentralUS.coffee",
+    "id": "AnalogClock.widget",
+    "source": "Wijeti",
+    "title": "AnalogClock CentralUS"
+  },
+  {
+    "category": "Other",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "BackgroundGrid.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "System",
+    "description": "NetworkInfo widget",
+    "entry": "NetworkInfo.coffee",
+    "id": "NetworkInfo.widget",
+    "source": "Wijeti",
+    "title": "NetworkInfo"
+  },
+  {
+    "category": "Calendar",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "SimpleDate",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Other",
+    "description": "TodayIn widget",
+    "entry": "TodayIn.coffee",
+    "id": "TodayIn",
+    "source": "Wijeti",
+    "title": "TodayIn"
+  },
+  {
+    "category": "Other",
+    "description": "TodayIn widget",
+    "entry": "TodayIn.coffee",
+    "id": "TodayIs",
+    "source": "Wijeti",
+    "title": "TodayIn"
+  },
+  {
+    "category": "Social",
+    "description": "TodayIn widget",
+    "entry": "TodayIn.coffee",
+    "id": "TodaysNews",
+    "source": "Wijeti",
+    "title": "TodayIn"
+  },
+  {
+    "category": "Fun",
+    "description": "TodayIn widget",
+    "entry": "TodayIn.coffee",
+    "id": "TodaysWord",
+    "source": "Wijeti",
+    "title": "TodayIn"
+  },
+  {
+    "category": "Clock",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "WorldClock.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "System",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "battery.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Finance",
+    "description": "btceur widget",
+    "entry": "btceur.coffee",
+    "id": "btc-eur",
+    "source": "Wijeti",
+    "title": "btceur"
+  },
+  {
+    "category": "Finance",
+    "description": "Bitcoin prices widget",
+    "entry": "index.coffee",
+    "id": "btc-prices.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Finance",
+    "description": "btc widget",
+    "entry": "btc.coffee",
+    "id": "btc.widget",
+    "source": "Wijeti",
+    "title": "btc"
+  },
+  {
+    "category": "Calendar",
+    "description": "1. Move calendar.widget to your Ubersicht widgets folder.",
+    "entry": "index.coffee",
+    "id": "calendar",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Clock",
+    "description": "Glassmorphism Widgets for \u00dcbersicht - v1.3.1",
+    "entry": "calendar.coffee",
+    "id": "clock",
+    "source": "Wijeti",
+    "title": "calendar"
+  },
+  {
+    "category": "System",
+    "description": "Glassmorphism Widgets for \u00dcbersicht - v1.3.1",
+    "entry": "calendar.coffee",
+    "id": "cpuram",
+    "source": "Wijeti",
+    "title": "calendar"
+  },
+  {
+    "category": "System",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "disk-usage.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "System",
+    "description": "Glassmorphism Widgets for \u00dcbersicht - v1.3.1",
+    "entry": "calendar.coffee",
+    "id": "diskusage",
+    "source": "Wijeti",
+    "title": "calendar"
+  },
+  {
+    "category": "Social",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "fever-rss.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Weather",
+    "description": "\u00dcbersicht forecast widget",
+    "entry": "gulpfile.js",
+    "id": "forecast",
+    "source": "Wijeti",
+    "title": "gulpfile"
+  },
+  {
+    "category": "Fun",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "german-word-of-the-day.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Fun",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "inspirational-quote.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "System",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "iostats.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Music",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "itunes-now.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Calendar",
+    "description": "Drag-able liquid-glass calendar card.",
+    "entry": "index.jsx",
+    "id": "liquid-glass-calendar.widget",
+    "source": "wakilibaraka/liquid-glass-calendar-widget",
+    "title": "Liquid Glass Calendar"
+  },
+  {
+    "category": "System",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "load-avg.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Productivity",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "mail.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "System",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "mini-top-mem.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Other",
+    "description": "Glassmorphism Widgets for \u00dcbersicht - v1.3.1",
+    "entry": "calendar.coffee",
+    "id": "misc",
+    "source": "Wijeti",
+    "title": "calendar"
+  },
+  {
+    "category": "Fun",
+    "description": "Glassmorphism Widgets for \u00dcbersicht - v1.3.1",
+    "entry": "calendar.coffee",
+    "id": "motogp",
+    "source": "Wijeti",
+    "title": "calendar"
+  },
+  {
+    "category": "System",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "netstat.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "System",
+    "description": "Glassmorphism Widgets for \u00dcbersicht - v1.3.1",
+    "entry": "calendar.coffee",
+    "id": "network",
+    "source": "Wijeti",
+    "title": "calendar"
+  },
+  {
+    "category": "System",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "network-throughput.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Social",
+    "description": "Glassmorphism Widgets for \u00dcbersicht - v1.3.1",
+    "entry": "calendar.coffee",
+    "id": "news",
+    "source": "Wijeti",
+    "title": "calendar"
+  },
+  {
+    "category": "Weather",
+    "description": "First-party. Open-Meteo needs no API key and no account. Refreshes every 30 minutes.",
+    "entry": "index.jsx",
+    "id": "openmeteo-forecast",
+    "source": "Wijeti",
+    "title": "Five-day forecast from Open-Meteo"
+  },
+  {
+    "category": "Weather",
+    "description": "First-party. Open-Meteo needs no API key and no account. Refreshes every 10 minutes.",
+    "entry": "index.jsx",
+    "id": "openmeteo-now",
+    "source": "Wijeti",
+    "title": "Current conditions, live from Open-Meteo"
+  },
+  {
+    "category": "Media",
+    "description": "Glassmorphism Widgets for \u00dcbersicht - v1.3.1",
+    "entry": "calendar.coffee",
+    "id": "photo",
+    "source": "Wijeti",
+    "title": "calendar"
+  },
+  {
+    "category": "System",
+    "description": "Glassmorphism Widgets for \u00dcbersicht - v1.3.1",
+    "entry": "calendar.coffee",
+    "id": "processes",
+    "source": "Wijeti",
+    "title": "calendar"
+  },
+  {
+    "category": "System",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "public_ip.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Clock",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "simple-clock.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Finance",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "simple-stocks.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Music",
+    "description": "Ubersicht-Spotify-widget",
+    "entry": "index.coffee",
+    "id": "spotify-current-track.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "System",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "swap-usage.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Productivity",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "to-do-list",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "System",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "top-cpu.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "System",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "top-mem.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "System",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "total-mem.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Weather",
+    "description": "\u00dcbersicht Weather Widget",
+    "entry": "index.coffee",
+    "id": "weather",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "System",
+    "description": "index widget",
+    "entry": "index.coffee",
+    "id": "wildstar-server-status.widget",
+    "source": "Wijeti",
+    "title": "index"
+  },
+  {
+    "category": "Fun",
+    "description": "Icon by AHA-SOFT (http://www.aha-soft.com)",
+    "entry": "index.coffee",
+    "id": "worldcup.widget",
+    "source": "Wijeti",
+    "title": "index"
+  }
+]

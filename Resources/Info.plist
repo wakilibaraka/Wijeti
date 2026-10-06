@@ -18,6 +18,9 @@
     <key>OSAScriptingDefinition</key><string>Wijeti.sdef</string>
     <key>NSAppleScriptEnabled</key><true/>
     <key>NSLocationUsageDescription</key><string>Wijeti passes location requests from your widgets to macOS.</string>
+    <key>NSLocationWhenInUseUsageDescription</key><string>Wijeti uses your location to fill in the coordinates that weather widgets ask Open-Meteo for.</string>
     <key>NSAppleEventsUsageDescription</key><string>Wijeti responds to AppleScript commands about your widgets.</string>
+    <key>NSSupportsAutomaticTermination</key><false/>
+    <key>NSSupportsSuddenTermination</key><false/>
 </dict>
 </plist>

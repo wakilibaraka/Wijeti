@@ -1,0 +1,234 @@
+// ##### ################## BEGIN SETTINGS #########################
+$color: rgba(255, 255, 255, 1); // Widget color and transparancy     #
+$x: 10px; // X Position                                           #
+$y: 10px; // Y Position                                            #
+$width: 455px; // Width                                            #
+$font: Roboto; // Font                                             #
+// ######################## BEGIN SETTINGS #########################
+
+#forecast-widget-index-js {
+    top: $x;
+    left: $y;
+    width: $width;
+    font-family: $font;
+    color: $color;
+    text-align: center;
+}
+
+@font-face {
+    font-family: Weather;
+    src: url('forecast.widget/icons.svg') format('svg');
+}
+
+@font-face {
+    font-family: Roboto;
+    src: url('forecast.widget/fonts/Roboto-Thin.ttf') format('truetype');
+    font-weight: 100;
+    font-style: normal;
+}
+@font-face {
+    font-family: Roboto;
+    src: url('forecast.widget/fonts/Roboto-ThinItalic.ttf') format('truetype');
+    font-weight: 100;
+    font-style: italic;
+}
+@font-face {
+    font-family: Roboto;
+    src: url('forecast.widget/fonts/Roboto-Light.ttf') format('truetype');
+    font-weight: 300;
+    font-style: normal;
+}
+@font-face {
+    font-family: Roboto;
+    src: url('forecast.widget/fonts/Roboto-LightItalic.ttf') format('truetype');
+    font-weight: 300;
+    font-style: italic;
+}
+@font-face {
+    font-family: Roboto;
+    src: url('forecast.widget/fonts/Roboto-Regular.ttf') format('truetype');
+    font-weight: 400;
+    font-style: normal;
+}
+@font-face {
+    font-family: Roboto;
+    src: url('forecast.widget/fonts/Roboto-RegularItalic.ttf') format('truetype');
+    font-weight: 400;
+    font-style: italic;
+}
+@font-face {
+    font-family: Roboto;
+    src: url('forecast.widget/fonts/Roboto-Medium.ttf') format('truetype');
+    font-weight: 500;
+    font-style: normal;
+}
+@font-face {
+    font-family: Roboto;
+    src: url('forecast.widget/fonts/Roboto-MediumItalic.ttf') format('truetype');
+    font-weight: 500;
+    font-style: italic;
+}
+@font-face {
+    font-family: Roboto;
+    src: url('forecast.widget/fonts/Roboto-Bold.ttf') format('truetype');
+    font-weight: 700;
+    font-style: normal;
+}
+@font-face {
+    font-family: Roboto;
+    src: url('forecast.widget/fonts/Roboto-BoldItalic.ttf') format('truetype');
+    font-weight: 700;
+    font-style: italic;
+}
+@font-face {
+    font-family: Roboto;
+    src: url('forecast.widget/fonts/Roboto-Black.ttf') format('truetype');
+    font-weight: 900;
+    font-style: normal;
+}
+@font-face {
+    font-family: Roboto;
+    src: url('forecast.widget/fonts/Roboto-BlackItalic.ttf') format('truetype');
+    font-weight: 900;
+    font-style: italic;
+}
+
+.fe-forecast {
+    opacity: 1;
+    -webkit-transition: opacity 0.5s;
+}
+
+.weather-icon {
+    width: 25px;
+    height: 25px;
+    background-size: cover;
+
+    &.big {
+        width: 80px;
+        height: 80px;
+    }
+}
+
+.fe-temp {
+    width: 90px;
+    font-weight: 700;
+    font-size: 50px;
+    letter-spacing: -1px;
+}
+
+.fe-temp::after {
+    content: "°";
+}
+
+.fe-temp-direction {
+    margin-top: -6px;
+    margin-right: 5px;
+    font-size: 13px;
+    text-align: center;
+}
+
+.days {
+    width: 100%;
+}
+
+.days > div {
+    width: 12.5%;
+    -webkit-align-content: center;
+    align-content: center;
+}
+
+.days .weather-icon {
+    margin-left: auto;
+    margin-right: auto;
+    background: $color;
+    -webkit-mask-position: 0 0;
+    -webkit-mask-image: url("");
+    -webkit-mask-size: 25px 25px;
+}
+
+.day-text {
+    font-weight: 900;
+    font-size: 12px;
+    // text-transform: uppercase;
+}
+
+.temp-range {
+    position: relative;
+    width: 100%;
+    height: 100px;
+    margin-top: 15px;
+
+    .center-bar {
+        margin-left: auto;
+        margin-right: auto;
+        width: 20px;
+
+        .bar {
+            position: absolute;
+            // left: 9px;
+            width: 20px;
+            border-radius: 20px;
+            background-color: $color;
+            -webkit-transition: top 0.5s, bottom 0.5s;
+
+            &::before {
+                position: absolute;
+                top: -14px;
+                left: 4px;
+                content: attr(data-content-high);
+                font-weight: 300;
+                font-size: 11px;
+            }
+
+            &::after {
+                position: absolute;
+                left: 4px;
+                bottom: -15px;
+                content: attr(data-content-low);
+                font-weight: 300;
+                font-size: 11px;
+            }
+        }
+    }
+}
+
+#fe-current-icon {
+    background: $color;
+    -webkit-mask-position: 0 0;
+    -webkit-mask-image: url("");
+    -webkit-mask-size: 80px 80px;
+}
+
+.fe-more-info {
+    margin-top: 5px;
+
+    .fe-summary {
+        font-weight: bold;
+        font-size: 18px;
+    }
+}
+
+.fe-currently {
+    width: 260px;
+
+    &:first-child {
+        margin-top: 5px;
+    }
+
+    &:last-child {
+        margin-bottom: auto;
+    }
+
+    .fe-wind {
+        font-weight: 300;
+        font-size: 14px;
+    }
+}
+
+.prepare-loading {
+    transition: opacity 0.5s;
+}
+
+.loading {
+    opacity: 0;
+}

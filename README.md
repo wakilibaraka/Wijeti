@@ -17,9 +17,13 @@ built for Apple Silicon, and without asking you to open Finder.
 - **Widgets on the desktop.** Two borderless, click-through `WKWebView` windows per screen
   (desktop level and above other apps), driven by the widget server's own `/<screen>/<layer>`
   routing. Exactly how Übersicht works, so existing `.jsx` widgets render unchanged.
-- **Onboarding without Finder.** The Widget Library window lets you upload a widget folder,
-  a `.jsx`/`.coffee`/`.js` file, or pick a bundled preset. No more dragging files into
-  `~/Library/Application Support/…/widgets`.
+- **Onboarding without Finder.** The Widget Library (⌘L, or the tray) lists bundled widgets
+  by category with search, installs them in one click, and lets you toggle each one on and
+  off. Drag a widget folder onto the window, or use **Install Your Own…**, and it lands in
+  the right place — you never need to know the path.
+- **Permissions and data sources.** One pane lists the permissions widgets may need
+  (Location, Full Disk Access, Automation, Notifications), shows the real status, and opens
+  the exact System Settings pane. Weather uses Open-Meteo, which needs no API key.
 - **AppleScript.** `refresh`, `reload`, `count widgets`, `every widget` with
   `id` / `hidden` / `showOnMainScreen` / `showOnAllScreens`.
 - **Tray menu and a SwiftUI preferences window** for widgets, screens, permissions and
@@ -65,6 +69,20 @@ Scripts/                build-runtime.sh, build-app.sh
 
 `WijetiCore` stays AppKit-free so a Linux or Windows host becomes a new `HostPlatform`
 implementation rather than a fork.
+
+## Widget library
+
+50 widgets ship in the bundle across 11 categories — System, Clock, Calendar, Weather,
+Music, Media, Finance, Productivity, Social, Fun and Other — harvested from
+[uebersicht-widgets](https://github.com/felixhageloh/uebersicht-widgets),
+[Glass-Widgets-Uebersicht](https://github.com/msavox/Glass-Widgets-Uebersicht) and
+[ubersicht-hud-dashboard](https://github.com/nambiropeter/ubersicht-hud-dashboard),
+plus first-party Open-Meteo widgets.
+
+Community widgets vary in age: some shell out to tools that no longer exist, so a given
+one may render blank. That is a property of the widget, not the host — the library lists
+them all and you remove the ones you do not want. Each preset's metadata lives in
+`Resources/presets/Catalog.json`.
 
 ## Widgets
 

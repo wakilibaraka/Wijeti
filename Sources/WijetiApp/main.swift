@@ -14,6 +14,7 @@ struct Options {
     var exitAfterSnapshot = false
     var installPresets = false
     var showPreferences = false
+    var showLibrary = false
 
     init(arguments: [String]) {
         var index = 0
@@ -41,6 +42,8 @@ struct Options {
                 installPresets = true
             case "--show-preferences":
                 showPreferences = true
+            case "--show-library":
+                showLibrary = true
             default:
                 break
             }
@@ -49,15 +52,20 @@ struct Options {
     }
 }
 
+/// The delegate builds every UI object, and those are all main-actor isolated, so the
+/// whole delegate is main-actor isolated too. AppKit calls these on the main thread.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let options: Options
     private let host: HostApp
     private let tray: TrayMenuController
     private let preferences: PreferencesWindowController
+    private let library: WidgetLibraryWindow
     private var snapshotWork: DispatchWorkItem?
     private var snapshotStarted = false
     private var appliedState = false
     private var pendingPreferences = false
+    private var pendingLibrary = false
 
     init(options: Options) {
         self.options = options
@@ -93,12 +101,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         tray = TrayMenuController(host: host)
         preferences = PreferencesWindowController(host: host)
+        library = WidgetLibraryWindow(
+            model: WidgetLibraryModel(host: host, presetsDirectory: platform.presetsDirectory)
+        )
         ScriptingBridge.shared.host = host
 
         super.init()
 
         tray.onShowPreferences = { [weak self] in self?.preferences.show() }
+        tray.onOpenLibrary = { [weak self] in self?.library.show() }
         tray.onQuit = { NSApp.terminate(nil) }
+        preferences.onOpenLibrary = { [weak self] in self?.library.show() }
         host.onServerStopped = { [weak self] in self?.tray.refreshStatus() }
         host.onStateChange = { [weak self] (fetched: WidgetStateResponse) in
             guard let self else { return }
@@ -106,9 +119,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // The window can only be populated once the server has scanned its widget
             // directory — the first poll can land before that, so wait for a state that
             // actually carries widgets.
-            if self.pendingPreferences, !fetched.widgets.isEmpty {
+            if self.pendingLibrary || self.pendingPreferences, !fetched.widgets.isEmpty {
                 self.pendingPreferences = false
-                self.preferences.show()
+                if self.pendingLibrary {
+                    self.pendingLibrary = false
+                    self.library.show()
+                } else {
+                    self.preferences.show()
+                }
             }
             self.scheduleSnapshotIfNeeded()
         }
@@ -130,14 +148,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tray.install()
         NSLog("Wijeti starting; widgets: %@", host.widgetDirectoryURL.path)
         host.start()
+        pendingLibrary = options.showLibrary
         pendingPreferences = options.showPreferences
-        if pendingPreferences {
+        if pendingPreferences || pendingLibrary {
             // Fallback for an empty widget directory: show the window anyway rather than
             // waiting forever for a state that will never list anything.
             DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
-                guard let self, self.pendingPreferences else { return }
+                guard let self, self.pendingPreferences || self.pendingLibrary else { return }
+                let showLibrary = self.pendingLibrary
                 self.pendingPreferences = false
-                self.preferences.show()
+                self.pendingLibrary = false
+                if showLibrary { self.library.show() } else { self.preferences.show() }
             }
         }
     }
@@ -230,6 +251,10 @@ let application = NSApplication.shared
 // Accessory policy keeps Wijeti out of the Dock, matching the original's LSUIElement
 // behaviour while still running from a plain SwiftPM executable.
 application.setActivationPolicy(.accessory)
-let delegate = AppDelegate(options: options)
-application.delegate = delegate
+// `AppDelegate` is main-actor isolated, and `main.swift` is top-level code, which the
+// compiler treats as nonisolated — so hop explicitly rather than dropping the isolation.
+MainActor.assumeIsolated {
+    let delegate = AppDelegate(options: options)
+    application.delegate = delegate
+}
 application.run()

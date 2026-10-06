@@ -8,6 +8,7 @@ public final class TrayMenuController {
     private var statusMenuItem: NSMenuItem?
 
     public var onShowPreferences: (() -> Void)?
+    public var onOpenLibrary: (() -> Void)?
     public var onQuit: (() -> Void)?
 
     public init(host: HostApp) {
@@ -21,11 +22,13 @@ public final class TrayMenuController {
         statusItem = item
 
         let menu = NSMenu()
+        let library = makeMenuItem("Widget Library…", #selector(openLibrary))
+        library.keyEquivalent = "l"
+        menu.addItem(library)
         menu.addItem(makeMenuItem("Refresh All Widgets", #selector(refreshAll)))
         menu.addItem(makeMenuItem("Reload Widgets", #selector(reloadWidgets)))
         menu.addItem(.separator())
         menu.addItem(makeMenuItem("Open Widgets Folder", #selector(openWidgetFolder)))
-        menu.addItem(makeMenuItem("Install Presets…", #selector(installPresets)))
         menu.addItem(makeMenuItem("Visit Widget Gallery", #selector(visitGallery)))
         menu.addItem(.separator())
 
@@ -61,7 +64,7 @@ public final class TrayMenuController {
     @objc private func refreshAll() { host.refreshWidgets() }
     @objc private func reloadWidgets() { host.reloadWidgets() }
     @objc private func openWidgetFolder() { host.revealWidgetDirectory() }
-    @objc private func installPresets() { host.installPresets() }
+    @objc private func openLibrary() { onOpenLibrary?() }
     @objc private func visitGallery() { host.visitGallery() }
     @objc private func showPreferences() { onShowPreferences?() }
     @objc private func quit() { onQuit?() }

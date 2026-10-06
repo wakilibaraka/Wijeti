@@ -30,7 +30,7 @@ if [ -L "$RELEASE/package.json" ]; then
   mv -f "$RELEASE/package.json.real" "$RELEASE/package.json"
 fi
 
-# Presets offered by "Install Presets…".
+# The widget library: bundled presets plus the Catalog.json the picker reads.
 cp -R "$ROOT/Resources/presets" "$APP/Contents/Resources/presets"
 
 cp "$ROOT/Resources/Wijeti.sdef" "$APP/Contents/Resources/Wijeti.sdef"
