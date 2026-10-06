@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+
+<!-- AppleScript vocabulary for Wijeti, matching the original Übersicht sdef.
+
+     Two rules learned the hard way, both load-bearing:
+     - Command codes must be EXACTLY eight characters. Four- or five-character codes make
+       the whole dictionary report as "corrupted" (-2705).
+     - Classes and properties need real <cocoa class/key> bindings, for the same reason.
+     Hence WijetiRefreshCommand, WijetiReloadCommand and WijetiWidget must keep existing
+     in the binary, and the delegate must keep answering `widgets`.
+     - `count` is NOT built into AppleScript's language layer. Cocoa only answers
+     `count every widget` when the dictionary declares the Core Suite `count` event
+       (`corecnte`), exactly as Finder does; without it AppleScript sends `count` to the
+       object specifier and gets "doesn't understand the count message" (-1708). -->
+<dictionary title="Wijeti">
+    <suite name="Wijeti Suite" code="Wiji" description="Wijeti Scripts">
+        <command name="refresh" code="WijetiRf" description="Refresh a widget, or all widgets.">
+            <cocoa class="WijetiRefreshCommand"/>
+            <direct-parameter description="A widget." type="widget" optional="yes"/>
+        </command>
+        <command name="reload" code="WijetiRl" description="Reload a widget, or all widgets.">
+            <cocoa class="WijetiReloadCommand"/>
+            <direct-parameter description="A widget." type="widget" optional="yes"/>
+        </command>
+        <!-- Core Suite `count`. Declaring the event is what lets `count widgets` reach the
+             app at all (without it AppleScript gets -1708); WijetiCountCommand supplies the
+             answer because Cocoa scripting has no built-in for it. -->
+        <command name="count" code="corecnte" description="Return the number of widgets.">
+            <cocoa class="WijetiCountCommand"/>
+            <direct-parameter description="The objects to count." type="specifier"/>
+            <parameter name="each" code="kocl" type="type" description="The class of the elements to be counted"/>
+            <result type="integer" description="The number of elements."/>
+        </command>
+        <class name="application" code="capp" description="An application's top level scripting object.">
+            <cocoa class="NSApplication"/>
+            <element type="widget" description="A list of all widgets." access="r">
+                <cocoa key="widgets"/>
+            </element>
+            <property name="name" code="pnam" description="The name of the application." type="text" access="r"/>
+            <property name="version" code="vers" description="The version of the application." type="text" access="r"/>
+        </class>
+        <class name="widget" code="Wdgt" description="A Widget." plural="widgets">
+            <cocoa class="WijetiWidget"/>
+            <property name="id" code="ID  " description="The widget's unique ID." type="text" access="r">
+                <cocoa key="id"/>
+            </property>
+            <property name="hidden" code="wghd" description="Is this widget hidden?" type="boolean" access="rw">
+                <cocoa key="hidden"/>
+            </property>
+            <property name="showOnMainScreen" code="wgms" description="Show on the main screen only?" type="boolean" access="rw">
+                <cocoa key="showOnMainScreen"/>
+            </property>
+            <property name="showOnAllScreens" code="wgas" description="Show on all screens?" type="boolean" access="rw">
+                <cocoa key="showOnAllScreens"/>
+            </property>
+            <!-- Lets `refresh widget 1` / `reload widget 1` be routed to that object
+                 instead of failing with "widget 1 doesn't understand the refresh message". -->
+            <responds-to name="refresh">
+                <cocoa method="refresh:"/>
+            </responds-to>
+            <responds-to name="reload">
+                <cocoa method="reload:"/>
+            </responds-to>
+        </class>
+    </suite>
+    <suite name="Standard Suite" code="ustd" description="Common classes and commands for all applications.">
+        <command name="quit" code="aevtquit" description="Quit the application.">
+            <cocoa class="NSQuitCommand"/>
+        </command>
+    </suite>
+</dictionary>

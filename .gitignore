@@ -1,0 +1,17 @@
+# Swift / Xcode
+.build/
+build/
+*.xcodeproj
+DerivedData/
+*.o
+*.dSYM
+
+# Vendored Node runtime (see Scripts/build-runtime.sh)
+server/release/node_modules/
+server/release/node-arm64
+server/release/node-x64
+server/release/localnode
+server/node_modules/
+
+# macOS
+.DS_Store
