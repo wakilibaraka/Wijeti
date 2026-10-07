@@ -100,6 +100,50 @@ folder name and the macOS error log.
 Bundled presets are hand-written, curated widgets. They're meant to be a starting point —
 copy any of them and make it yours.
 
+## Adding and removing widgets
+
+You never need to open the widget folder directly. Everything happens from the **Widget
+Library** window (⌘L, or the tray menu → Widget Library…):
+
+### Add a bundled widget
+
+1. Open the Widget Library.
+2. Find the widget in the **Library** section (use the search bar or category chips to filter).
+3. Click **Add** — a confirmation popup asks you to confirm.
+4. The widget is copied into your widget directory, marked visible and shown on all screens,
+   and the running server reloads. The widget now appears in the **Your widgets** section at
+   the top of the Library, where you can toggle it on/off, send it behind other apps, or show
+   it on all screens.
+
+### Add your own widget
+
+Drop any of these onto the Widget Library window (or any part of the app that accepts drops):
+
+- A widget **folder** (must contain `index.jsx`, `index.coffee`, or `index.js`).
+- A single **`.jsx` / `.coffee` / `.js` file** — Wijeti wraps it in a folder of the same name.
+- A **`.zip` archive** — Wijeti extracts it to a temp folder and imports the contents. If the
+  zip contains a single top-level folder, that folder's contents are imported directly.
+
+You can also click **Install Your Own…** in the Library header to open a file picker.
+
+### Remove a widget
+
+1. In the **Your widgets** section at the top of the Library, find the widget.
+2. Click the **trash** icon — a confirmation popup asks you to confirm.
+3. The widget is removed from disk and the server reloads. It disappears from the list.
+
+### Toggle a widget without removing it
+
+In the **Your widgets** section:
+
+- The checkbox on the left toggles **visibility** (hidden widgets don't render).
+- **Behind apps** sends the widget behind other applications.
+- **All screens** shows the widget on every display.
+- **Preview** loads the widget in the preview pane so you can see it before it goes live.
+
+The menu bar tray also lets you refresh all widgets, reload them, or open the Library —
+no need to touch the widget folder.
+
 ## Keyboard shortcuts
 
 | Shortcut | Action |

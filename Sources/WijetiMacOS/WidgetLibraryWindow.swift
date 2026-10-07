@@ -198,6 +198,13 @@ public final class WidgetLibraryModel: ObservableObject {
     @Published public var previewReady = false
     /// True while a drag is hovering over the window, for the drop-target affordance.
     @Published public var isDropTargeted = false
+    /// Shows a one-shot confirmation/alert popup.
+    @Published public var showPopup = false
+    @Published public var popupTitle = ""
+    @Published public var popupMessage = ""
+    /// Popup button label for the action to run when dismissed.
+    @Published public var popupActionLabel = ""
+    @Published public var popupAction: (() -> Void)?
 
     let previewController: WidgetPreviewController
     private let host: HostApp
@@ -259,7 +266,9 @@ public final class WidgetLibraryModel: ObservableObject {
 
     public func reload() {
         catalog = PresetCatalog.load(from: presetsDirectory)
-        installed = host.widgetIDs.map { id in
+        // installed widgets come from the running server's state
+        installed = host.widgetIDs.compactMap { id in
+            guard host.widgetDirectoryURL.appendingPathComponent(id).path != "/" else { return nil }
             let settings = host.settings(for: id)
             return Installed(
                 id: id,
@@ -270,7 +279,7 @@ public final class WidgetLibraryModel: ObservableObject {
             )
         }
         installedPresetIDs = Set(
-            catalog.presets.map(\.id).filter { folderExists($0) }
+            catalog.presets.map(\.id).filter { widgetInstalled($0) }
         )
     }
 
@@ -307,7 +316,7 @@ public final class WidgetLibraryModel: ObservableObject {
     /// Copies a bundled preset into the widget directory and reveals it.
     public func install(_ preset: Preset) {
         let source = presetsDirectory.appendingPathComponent(preset.id)
-        guard folderExists(preset.id) else {
+        guard bundledPresetExists(preset.id) else {
             status = "\(preset.title) is missing from the bundled library."
             return
         }
@@ -331,11 +340,39 @@ public final class WidgetLibraryModel: ObservableObject {
         }
     }
 
+    /// Shows a confirmation popup before installing.
+    public func confirmInstall(_ preset: Preset) {
+        popupTitle = "Install \(preset.title)?"
+        popupMessage = "This will add \"\(preset.title)\" to your desktop widgets.\n\nIt will be visible and shown on all screens by default."
+        popupActionLabel = "Install"
+        popupAction = { [weak self] in self?.doInstall(preset) }
+        showPopup = true
+    }
+
+    fileprivate func doInstall(_ preset: Preset) {
+        showPopup = false
+        install(preset)
+    }
+
+    /// Shows a confirmation popup before removing.
+    public func confirmRemove(_ widget: Installed) {
+        popupTitle = "Remove \(widget.title)?"
+        popupMessage = "This will remove \"\(widget.title)\" from your widgets. This cannot be undone."
+        popupActionLabel = "Remove"
+        popupAction = { [weak self] in self?.doRemove(widget) }
+        showPopup = true
+    }
+
+    private func doRemove(_ widget: Installed) {
+        showPopup = false
+        remove(widget)
+    }
+
     /// Installs several presets at once — the "Add the essentials" path.
     public func install(_ presets: [Preset]) {
         var installed = 0
         var failed: [String] = []
-        for preset in presets where !folderExists(preset.id) {
+        for preset in presets where !bundledPresetExists(preset.id) {
             if let result = try? importer.importWidgets(at: [presetsDirectory.appendingPathComponent(preset.id)]),
                !result.installed.isEmpty {
                 installed += 1
@@ -351,32 +388,71 @@ public final class WidgetLibraryModel: ObservableObject {
         reload()
     }
 
-    // MARK: - Bring your own
-
-    /// Installs whatever the user dropped onto the window.
+    // MARK: - Bring your own    /// Installs whatever the user dropped onto the window. Handles folders, .jsx/.js/.coffee
+    /// files, and .zip archives (extracted to a temp dir first).
     public func importDropped(_ urls: [URL]) {
-        let usable = urls.filter { importer.canImport($0) }
+        let usable = urls.filter { importer.canImport($0) || $0.pathExtension.lowercased() == "zip" }
         guard !usable.isEmpty else {
-            status = "Drop a widget folder, or a .jsx / .coffee / .js file."
+            status = "Drop a widget folder, a .jsx / .coffee / .js file, or a .zip archive."
             return
         }
         do {
-            let result = try importer.importWidgets(at: usable)
+            var allURLs: [URL] = []
+            for url in usable {
+                if url.pathExtension.lowercased() == "zip" {
+                    if let extracted = try? extractZip(url) {
+                        allURLs.append(contentsOf: extracted)
+                    } else {
+                        status = "Could not extract \(url.lastPathComponent)."
+                        return
+                    }
+                } else {
+                    allURLs.append(url)
+                }
+            }
+            let result = try importer.importWidgets(at: allURLs)
             var parts: [String] = []
             if !result.installed.isEmpty {
                 parts.append("Installed \(result.installed.count)")
                 for id in result.installed { host.updateSettings(id) { $0.hidden = false } }
             }
             if !result.skipped.isEmpty { parts.append("already had \(result.skipped.joined(separator: ", "))") }
-            if !result.failures.isEmpty {
-                parts.append("skipped \(result.failures.first?.reason ?? "some files")")
-            }
+            if !result.failures.isEmpty { parts.append("skipped \(result.failures.first?.reason ?? "some files")") }
             status = parts.joined(separator: " · ")
             host.reloadWidgets()
             reload()
         } catch {
             status = "Import failed: \(error.localizedDescription)"
         }
+    }
+
+    /// Extracts a .zip archive to a temp directory and returns the paths of its contents.
+    private func extractZip(_ zipURL: URL) throws -> [URL] {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Wijeti-Zip-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        process.arguments = ["-o", zipURL.path, "-d", tempDir.path]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+        if process.terminationStatus != 0 {
+            throw NSError(domain: "WijetiZip", code: Int(process.terminationStatus),
+                          userInfo: [NSLocalizedDescriptionKey: "unzip failed"])
+        }
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: tempDir.path)) ?? []
+        // If the zip contained a single top-level folder, use its contents directly.
+        if contents.count == 1,
+           let first = contents.first(where: { name in
+               var isDir: ObjCBool = false
+               return FileManager.default.fileExists(atPath: tempDir.appendingPathComponent(name).path, isDirectory: &isDir) && isDir.boolValue
+           }) {
+            return [tempDir.appendingPathComponent(first)]
+        }
+        return contents.map { tempDir.appendingPathComponent($0) }
     }
 
     /// Opens a panel so the user can pick a folder or a bare widget file.
@@ -431,7 +507,13 @@ public final class WidgetLibraryModel: ObservableObject {
 
     // MARK: - Helpers
 
-    private func folderExists(_ id: String) -> Bool {
+    /// True when the bundled preset exists in the presets directory (library source).
+    private func bundledPresetExists(_ id: String) -> Bool {
+        FileManager.default.fileExists(atPath: presetsDirectory.appendingPathComponent(id).path)
+    }
+
+    /// True when a widget is already installed (lives in the widget directory).
+    private func widgetInstalled(_ id: String) -> Bool {
         FileManager.default.fileExists(
             atPath: host.widgetDirectoryURL.appendingPathComponent(id).path
         )
@@ -459,12 +541,10 @@ struct WidgetLibraryView: View {
 
     var body: some View {
         HSplitView {
-            installedList
-                .frame(minWidth: 250, idealWidth: 280)
-            libraryList
-                .frame(minWidth: 360, idealWidth: 380)
-            previewPane
+            libraryPane
                 .frame(minWidth: 340, idealWidth: 380)
+            previewPane
+                .frame(minWidth: 540, idealWidth: 720)
         }
         .frame(minWidth: 1040, minHeight: 560)
         .onDrop(of: [.fileURL], isTargeted: $model.isDropTargeted) { providers in
@@ -472,140 +552,62 @@ struct WidgetLibraryView: View {
         }
     }
 
-    // Installed widgets
-    private var installedList: some View {
+    // MARK: - Library pane (merged: installed widgets + library catalog)
+
+    private var libraryPane: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Your widgets")
-                .font(.headline)
-                .padding(.horizontal, 16)
-                .padding(.top, 16)
-                .padding(.bottom, 8)
-
-            if model.installed.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "square.dashed")
-                        .font(.system(size: 28))
-                        .foregroundStyle(.secondary)
-                    Text("No widgets yet")
-                        .font(.callout.weight(.medium))
-                    Text("Pick one from the library,\nor drop a widget folder here.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    ForEach(model.installed) { widget in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Toggle("", isOn: Binding(
-                                    get: { widget.visible },
-                                    set: { model.setVisible($0, for: widget.id) }
-                                ))
-                                .labelsHidden()
-                                Text(widget.title)
-                                    .font(.callout.weight(.medium))
-                                    .lineLimit(1)
-                                Spacer()
-                                Button {
-                                    model.remove(widget)
-                                } label: {
-                                    Image(systemName: "trash")
-                                }
-                                .buttonStyle(.borderless)
-                                .help("Remove \(widget.title)")
-                            }
-                            HStack(spacing: 12) {
-                                Toggle("Behind apps", isOn: Binding(
-                                    get: { widget.inBackground },
-                                    set: { model.setInBackground($0, for: widget.id) }
-                                ))
-                                .toggleStyle(.checkbox)
-                                Toggle("All screens", isOn: Binding(
-                                    get: { widget.onAllScreens },
-                                    set: { model.setOnAllScreens($0, for: widget.id) }
-                                ))
-                                .toggleStyle(.checkbox)
-                            }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 2)
-                    }
-                }
-                .listStyle(.inset)
-            }
-
-            Divider()
+            // Header: title + Install Your Own button
             HStack {
-                Button("Add Widgets…") { model.chooseFilesToImport() }
+                Text("Library")
+                    .font(.headline)
                 Spacer()
-                Button("Refresh") { model.refreshAll() }
-            }
-            .padding(12)
-        }
-    }
-
-    // Library
-    private var libraryList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Library")
-                        .font(.headline)
-                    Spacer()
-                    Button("Install Your Own…") { model.chooseFilesToImport() }
-                }
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("Search widgets", text: $model.search)
-                        .textFieldStyle(.plain)
-                    if !model.search.isEmpty {
-                        Button {
-                            model.search = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.borderless)
-                    }
-                }
-                .padding(7)
-                .background(
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color(nsColor: .controlBackgroundColor))
-                )
+                Button("Install Your Own…") { model.chooseFilesToImport() }
+                    .controlSize(.small)
             }
             .padding(.horizontal, 16)
             .padding(.top, 16)
+            .padding(.bottom, 8)
+
+            // Search bar
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search widgets", text: $model.search)
+                    .textFieldStyle(.plain)
+                if !model.search.isEmpty {
+                    Button {
+                        model.search = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            .padding(7)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            )
+            .padding(.horizontal, 16)
             .padding(.bottom, 10)
 
+            // Category filter pills
             categoryFilter
 
-            if model.groups.isEmpty {
-                VStack(spacing: 6) {
-                    Text("Nothing matches “\(model.search)”")
-                        .foregroundStyle(.secondary)
-                    Text("You can still add your own widget with Install Your Own…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Content: installed widgets section + library catalog
+            if model.installed.isEmpty && model.search.isEmpty && model.selectedCategory == nil {
+                // Show all library by default when nothing installed and no filter
+                librarySection
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 18) {
-                        ForEach(model.groups) { group in
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(group.category.uppercased())
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                ForEach(group.presets) { preset in
-                                    presetRow(preset)
-                                }
-                            }
+                    VStack(alignment: .leading, spacing: 16) {
+                        // Installed widgets section
+                        if !model.installed.isEmpty {
+                            installedSection
                         }
+                        // Library catalog section (filtered)
+                        librarySection
                     }
                     .padding(.horizontal, 16)
                     .padding(.bottom, 16)
@@ -613,6 +615,7 @@ struct WidgetLibraryView: View {
             }
 
             Divider()
+            // Footer: status + drop indicator
             HStack {
                 Text(model.status.isEmpty ? "\(model.catalog.presets.count) widgets bundled" : model.status)
                     .font(.caption)
@@ -630,6 +633,150 @@ struct WidgetLibraryView: View {
         }
     }
 
+    private var installedSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+                Text("Your widgets")
+                    .font(.subheadline.weight(.semibold))
+                Text("(\(model.installed.count))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.bottom, 8)
+
+            ForEach(model.installed) { widget in
+                installedWidgetRow(widget)
+                Divider().padding(.leading, 12)
+            }
+        }
+    }
+
+    private func installedWidgetRow(_ widget: WidgetLibraryModel.Installed) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Toggle("", isOn: Binding(
+                    get: { widget.visible },
+                    set: { model.setVisible($0, for: widget.id) }
+                ))
+                .labelsHidden()
+                Text(widget.title)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                Spacer()
+                Button {
+                    model.confirmRemove(widget)
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Remove \(widget.title)")
+            }
+            HStack(spacing: 12) {
+                Toggle("Behind apps", isOn: Binding(
+                    get: { widget.inBackground },
+                    set: { model.setInBackground($0, for: widget.id) }
+                ))
+                .toggleStyle(.checkbox)
+                Toggle("All screens", isOn: Binding(
+                    get: { widget.onAllScreens },
+                    set: { model.setOnAllScreens($0, for: widget.id) }
+                ))
+                .toggleStyle(.checkbox)
+                Spacer()
+                Button("Preview") {
+                    if let preset = model.catalog.presets.first(where: { $0.id == widget.id }) {
+                        model.select(preset)
+                    }
+                }
+                .font(.caption2)
+                .controlSize(.small)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var librarySection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if model.groups.isEmpty {
+                VStack(spacing: 6) {
+                    if !model.search.isEmpty || model.selectedCategory != nil {
+                        Text("Nothing matches \"\(model.search)\"")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("No bundled widgets")
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("You can still add your own with Install Your Own…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(model.groups) { group in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(group.category.uppercased())
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            ForEach(group.presets) { preset in
+                                libraryWidgetRow(preset)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func libraryWidgetRow(_ preset: Preset) -> some View {
+        let installed = model.isInstalled(preset)
+        let selected = model.selectedPreset?.id == preset.id
+        return HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(preset.title)
+                    .font(.callout.weight(.medium))
+                Text(preset.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                if preset.source != "Wijeti" {
+                    Text(preset.source)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Spacer(minLength: 8)
+            if installed {
+                Button("Installed") { }
+                    .disabled(true)
+                    .controlSize(.small)
+                    .foregroundStyle(.green)
+            } else {
+                Button("Add") {
+                    model.confirmInstall(preset)
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(selected ? Color.accentColor.opacity(0.16) : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { model.select(preset) }
+        .help("Preview \(preset.title)")
+    }
+
+    // MARK: - Category filter
+
     private var categoryFilter: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
@@ -639,7 +786,7 @@ struct WidgetLibraryView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.bottom, 12)
+            .padding(.bottom, 10)
         }
     }
 
@@ -659,58 +806,30 @@ struct WidgetLibraryView: View {
         .buttonStyle(.plain)
     }
 
-    private func presetRow(_ preset: Preset) -> some View {
-        let installed = model.isInstalled(preset)
-        let selected = model.selectedPreset?.id == preset.id
-        return HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(preset.title)
-                    .font(.callout.weight(.medium))
-                Text(preset.description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                if preset.source != "Wijeti" {
-                    Text(preset.source)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            Spacer(minLength: 8)
-            Button(installed ? "Installed" : "Add") {
-                if !installed { model.install(preset) }
-            }
-            .disabled(installed)
-            .controlSize(.small)
-        }
-        .padding(.vertical, 5)
-        .padding(.horizontal, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(selected ? Color.accentColor.opacity(0.16) : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .onTapGesture { model.select(preset) }
-        .help("Preview \(preset.title)")
-    }
+    // MARK: - Preview pane (wide)
 
-    // Preview pane
     private var previewPane: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Preview")
-                        .font(.headline)
-                    Spacer()
-                    if let preset = model.selectedPreset {
-                        Text(preset.category)
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Capsule().fill(Color.accentColor.opacity(0.18)))
-                    }
-                }
+            // Header
+            HStack {
+                Text("Preview")
+                    .font(.headline)
+                Spacer()
                 if let preset = model.selectedPreset {
+                    Text(preset.category)
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.18)))
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            .padding(.bottom, 8)
+
+            // Preset info
+            if let preset = model.selectedPreset {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(preset.title)
                         .font(.title3.weight(.semibold))
                     Text(preset.description)
@@ -723,39 +842,68 @@ struct WidgetLibraryView: View {
                             .foregroundStyle(.tertiary)
                     }
                     HStack {
-                        Button(model.isInstalled(preset) ? "Installed" : "Install") {
-                            model.install(preset)
+                        if model.isInstalled(preset) {
+                            Text("Installed")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.green)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.green.opacity(0.15)))
+                        } else {
+                            Button("Install") {
+                                model.doInstall(preset)
+                            }
+                            .controlSize(.small)
                         }
-                        .disabled(model.isInstalled(preset))
                         Spacer()
+                        Button("Cancel") {
+                            model.selectedPreset = nil
+                        }
+                        .controlSize(.small)
+                        .keyboardShortcut(.escape)
                     }
-                    .padding(.top, 2)
+                    .padding(.top, 4)
                 }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
+            } else {
+                // No selection: show hint
+                HStack {
+                    Spacer()
+                    VStack(spacing: 4) {
+                        Text("Select a widget to preview")
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        Text("Pick one from the Library, or drop a .zip / folder here")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(16)
+                    Spacer()
+                }
+                .background(
+                    LinearGradient(
+                        colors: [Color(red: 0.16, green: 0.17, blue: 0.22), Color(red: 0.07, green: 0.07, blue: 0.1)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(.white.opacity(0.08), lineWidth: 1)
+                )
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
-            .padding(.bottom, 10)
 
+            // Live preview web view
             ZStack {
-                // A wallpaper-ish backdrop so light-on-dark widgets read the way they
-                // will on the desktop.
                 LinearGradient(
                     colors: [Color(red: 0.16, green: 0.17, blue: 0.22), Color(red: 0.07, green: 0.07, blue: 0.1)],
                     startPoint: .top,
                     endPoint: .bottom
                 )
                 if model.selectedPreset == nil {
-                    VStack(spacing: 8) {
-                        Image(systemName: "cursor.arrow.rays")
-                            .font(.system(size: 26))
-                            .foregroundStyle(.white.opacity(0.5))
-                        Text("Pick a widget to see it live")
-                            .font(.callout.weight(.medium))
-                            .foregroundStyle(.white.opacity(0.8))
-                        Text("Nothing is installed until you hit Install.")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.5))
-                    }
+                    // empty state already shown above
                 } else if model.previewReady {
                     PreviewWebView(controller: model.previewController.webViewController)
                 } else {
@@ -775,23 +923,39 @@ struct WidgetLibraryView: View {
                     .strokeBorder(.white.opacity(0.08), lineWidth: 1)
             )
             .padding(.horizontal, 16)
+            .padding(.top, 8)
 
+            // Footer: status + live preview label + popup button
             HStack {
                 Text(model.previewStatus)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer()
-                Text(model.selectedPreset == nil ? "" : "live preview")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                if model.selectedPreset != nil {
+                    Text("live preview")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
 
             Divider()
         }
+        .alert(isPresented: $model.showPopup) {
+            Alert(
+                title: Text(model.popupTitle),
+                message: Text(model.popupMessage),
+                primaryButton: .default(Text(model.popupActionLabel), action: {
+                    model.popupAction?()
+                }),
+                secondaryButton: .cancel()
+            )
+        }
     }
+
+    // MARK: - Drop handling
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         let group = DispatchGroup()

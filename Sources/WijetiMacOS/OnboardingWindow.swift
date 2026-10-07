@@ -198,6 +198,16 @@ struct OnboardingView: View {
                     + "with `id`, `hidden`, and screen placement. Driving Wijeti from a script or "
                     + "another app works out of the box."
             )
+
+            featureRow(
+                symbol: "arrow.down.circle",
+                title: "Add widgets without opening a folder",
+                body: "Drop a widget folder, a `.jsx` / `.coffee` / `.js` file, or a `.zip` archive "
+                    + "onto the Widget Library — or click Install Your Own… to pick one. Wijeti "
+                    + "copies it into place, reloads the server, and shows it in your widgets list "
+                    + "where you can toggle it on, send it behind other apps, or remove it with a "
+                    + "confirmation popup. You never need to know where widgets live on disk."
+            )
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 12)
