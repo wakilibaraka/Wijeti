@@ -18,15 +18,18 @@ public final class TrayMenuController {
     public func install() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = Self.makeIcon()
-        item.button?.toolTip = "Wijeti"
+        item.button?.toolTip = "Wijeti — open the menu for widgets, preferences, and quit."
         statusItem = item
 
         let menu = NSMenu()
         let library = makeMenuItem("Widget Library…", #selector(openLibrary))
         library.keyEquivalent = "l"
         menu.addItem(library)
-        menu.addItem(makeMenuItem("Refresh All Widgets", #selector(refreshAll)))
-        menu.addItem(makeMenuItem("Reload Widgets", #selector(reloadWidgets)))
+        let refreshAll = makeMenuItem("Refresh All Widgets", #selector(refreshAll))
+        refreshAll.keyEquivalent = "r"
+        menu.addItem(refreshAll)
+        let reloadWidgets = makeMenuItem("Reload Widgets", #selector(reloadWidgets))
+        menu.addItem(reloadWidgets)
         menu.addItem(.separator())
         menu.addItem(makeMenuItem("Open Widgets Folder", #selector(openWidgetFolder)))
         menu.addItem(makeMenuItem("Visit Widget Gallery", #selector(visitGallery)))

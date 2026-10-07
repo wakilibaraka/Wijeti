@@ -170,6 +170,8 @@ public final class DataSourceSettings: ObservableObject {
     @Published public var units: Units {
         didSet { defaults.set(units.rawValue, forKey: Key.units) }
     }
+    /// The last permission action the view tried, shown as a caption under the list.
+    @Published public var lastAction = ""
 
     private let defaults: UserDefaults
 
@@ -253,7 +255,6 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
 struct PermissionsView: View {
     @ObservedObject var probe: PermissionProbe
     @ObservedObject var sources: DataSourceSettings
-    @State private var lastAction = ""
 
     var body: some View {
         ScrollView {
@@ -292,8 +293,8 @@ struct PermissionsView: View {
                 openMeteoSection
                 unitsSection
 
-                if !lastAction.isEmpty {
-                    Text(lastAction)
+                if !sources.lastAction.isEmpty {
+                    Text(sources.lastAction)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -328,7 +329,7 @@ struct PermissionsView: View {
 
             Button(kind.isProbeable ? "Request" : "Open Settings") {
                 probe.request(kind)
-                lastAction = kind.isProbeable
+                sources.lastAction = kind.isProbeable
                     ? "Asked macOS for \(kind.title)."
                     : "Opened System Settings → \(kind.title)."
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) { probe.refresh() }
@@ -364,7 +365,7 @@ struct PermissionsView: View {
                 Button("Use My Location") {
                     Task {
                         let ok = await sources.useCurrentLocation()
-                        lastAction = ok
+                        sources.lastAction = ok
                             ? "Location set to \(sources.openMeteoLatitude), \(sources.openMeteoLongitude)."
                             : "Location unavailable — allow Location access, or type coordinates."
                     }

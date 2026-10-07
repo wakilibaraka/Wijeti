@@ -34,6 +34,7 @@ fi
 cp -R "$ROOT/Resources/presets" "$APP/Contents/Resources/presets"
 
 cp "$ROOT/Resources/Wijeti.sdef" "$APP/Contents/Resources/Wijeti.sdef"
+cp -R "$ROOT/Resources/Assets.xcassets" "$APP/Contents/Resources/Assets.xcassets"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 
 echo "==> signing (ad-hoc)"
@@ -44,4 +45,4 @@ codesign --force --deep --sign - \
   "$APP"
 codesign --verify --deep --strict "$APP"
 
-echo "==> built $APP"
+echo "==> built $APP (Wijeti v0.1.0)"

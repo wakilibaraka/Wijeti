@@ -3,53 +3,76 @@ import SwiftUI
 import WebKit
 import WijetiCore
 
-/// The onboarding surface: a browsable library of bundled widgets, drag-and-drop or
-/// a file picker to bring in your own, and toggles for everything already installed.
-///
-/// Nothing here needs Finder or a known path — the whole point is that a user can go
-/// from "I just installed Wijeti" to "widgets on my desktop" without leaving the app.
-public final class WidgetLibraryWindow: NSObject, NSWindowDelegate {
-    private var window: NSWindow?
-    private let model: WidgetLibraryModel
+// MARK: - Library window controller
 
-    @MainActor
+/// The main widget library window: installed widgets on the left, the bundled library
+/// in the middle, and a live preview of any preset on the right.
+///
+/// Nothing here is installed until the user taps Install, and the preview pane runs a
+/// private throwaway server so the real widget directory, settings and running server are
+/// never touched.
+public final class WidgetLibraryWindow: NSWindowController {
+    /// The shared model that owns the catalog, the installed list, the preview controller,
+    /// and the install/import/refresh actions.
+    public var model: WidgetLibraryModel!
+
+    private var didShowWindow = false
+
     public init(model: WidgetLibraryModel) {
         self.model = model
-        super.init()
+        // The SwiftUI view is the window's content; the controller keeps the model alive.
+        let view = WidgetLibraryView(model: model)
+        let hosting = NSHostingController(rootView: view)
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Widget Library"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.isReleasedWhenClosed = false
+        super.init(window: window)
+        window.center()
+        window.conditionalSetContentSize(width: 1180, height: 660)
+    }
+
+    /// First show: seed a selection so the preview pane is never dead space.
+    @MainActor
+    public override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        guard !didShowWindow else { return }
+        didShowWindow = true
+        model.autoSelectIfNeeded()
     }
 
     @MainActor
+    public required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    @MainActor
+    public override func awakeFromNib() {
+        fatalError("WidgetLibraryWindow should not be loaded from a nib")
+    }
+
+    /// Public entry point used by the app delegate and the verification runner.
+    /// Keeps the same shape as the v1 `show()` so callers do not need to change.
+    @MainActor
     public func show() {
-        if window == nil {
-            let hosting = NSHostingController(rootView: WidgetLibraryView(model: model))
-            let window = NSWindow(contentViewController: hosting)
-            window.title = "Wijeti Widget Library"
-            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-            window.isReleasedWhenClosed = false
-            window.setContentSize(NSSize(width: 1140, height: 640))
-            window.minSize = NSSize(width: 1040, height: 560)
-            window.delegate = self
-            self.window = window
-        }
-        model.reload()
-        model.autoSelectIfNeeded()
         NSApp.activate(ignoringOtherApps: true)
-        window?.makeKeyAndOrderFront(nil)
+        showWindow(nil)
         model.resumePreview()
     }
 
-    /// Stops the private preview server (and its node process) when the window closes.
-    public func windowWillClose(_ notification: Notification) {
-        // Keep the window alive so reopening is instant; just give focus back to nothing.
-        // AppKit calls this on the main thread; hop explicitly for the actor check.
-        MainActor.assumeIsolated { model.stopPreview() }
-        window?.orderOut(nil)
-    }
-
-    /// App-wide teardown: the preview server is an extra node process.
+    /// Stops the (private) preview server and tears down the scratch directories.
     @MainActor
     public func shutdown() {
         model.stopPreview()
+    }
+
+    /// Keep the window alive across close so reopening is instant.
+    @MainActor
+    public override func close() {
+        // Match the v1 behaviour: stop the preview server, but leave the window object
+        // alive so a later `show()` is cheap.
+        model.stopPreview()
+        window?.orderOut(nil)
     }
 
     // MARK: - Verification hooks (used by `--verify-presets`)
@@ -173,6 +196,8 @@ public final class WidgetLibraryModel: ObservableObject {
     @Published public var previewStatus = ""
     /// True once the preview page has loaded; until then the pane shows the status.
     @Published public var previewReady = false
+    /// True while a drag is hovering over the window, for the drop-target affordance.
+    @Published public var isDropTargeted = false
 
     let previewController: WidgetPreviewController
     private let host: HostApp
@@ -431,7 +456,6 @@ public final class WidgetLibraryModel: ObservableObject {
 
 struct WidgetLibraryView: View {
     @ObservedObject var model: WidgetLibraryModel
-    @State private var isDropTargeted = false
 
     var body: some View {
         HSplitView {
@@ -443,7 +467,7 @@ struct WidgetLibraryView: View {
                 .frame(minWidth: 340, idealWidth: 380)
         }
         .frame(minWidth: 1040, minHeight: 560)
-        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+        .onDrop(of: [.fileURL], isTargeted: $model.isDropTargeted) { providers in
             handleDrop(providers)
         }
     }
@@ -595,7 +619,7 @@ struct WidgetLibraryView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer()
-                if isDropTargeted {
+                if model.isDropTargeted {
                     Label("Drop to install", systemImage: "arrow.down.circle.fill")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.tint)

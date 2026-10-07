@@ -87,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var appliedState = false
     private var pendingPreferences = false
     private var pendingLibrary = false
+    private var onboarding: OnboardingWindowController
     private var presetVerifier: PresetVerifier?
     private var verifyStarted = false
 
@@ -127,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         library = WidgetLibraryWindow(
             model: WidgetLibraryModel(host: host, presetsDirectory: platform.presetsDirectory)
         )
+        onboarding = OnboardingWindowController(host: host)
         ScriptingBridge.shared.host = host
 
         super.init()
@@ -172,6 +174,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tray.install()
         NSLog("Wijeti starting; widgets: %@", host.widgetDirectoryURL.path)
         host.start()
+
+        // First-launch onboarding, before anything else. It is the intro surface, so it
+        // should be the first thing the user sees, and it clears itself on dismiss.
+        onboarding.show()
+
         pendingLibrary = options.showLibrary
         pendingPreferences = options.showPreferences
         if pendingPreferences || pendingLibrary {

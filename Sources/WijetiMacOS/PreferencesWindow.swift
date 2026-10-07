@@ -20,6 +20,20 @@ public final class PreferencesModel: ObservableObject {
     @Published public var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
     @Published public var status: String = ""
 
+    public enum Tab: String, CaseIterable, Identifiable {
+        case widgets, general, permissions
+        public var id: String { rawValue }
+        public var title: String {
+            switch self {
+            case .widgets: return "Widgets"
+            case .general: return "General"
+            case .permissions: return "Permissions"
+            }
+        }
+    }
+
+    @Published public var selectedTab: Tab = .widgets
+
     private let host: HostApp
 
     public init(host: HostApp) {
@@ -101,47 +115,18 @@ public final class PreferencesModel: ObservableObject {
     }
 }
 
-struct PreferencesView: View {
+struct WidgetSettingsView: View {
     @ObservedObject var model: PreferencesModel
     @ObservedObject var probe: PermissionProbe
     @ObservedObject var sources: DataSourceSettings
     var onOpenLibrary: () -> Void
 
-    private enum Tab: String, CaseIterable, Identifiable {
-        case widgets, general, permissions
-        var id: String { rawValue }
-        var title: String {
-            switch self {
-            case .widgets: return "Widgets"
-            case .general: return "General"
-            case .permissions: return "Permissions"
-            }
-        }
-    }
-
-    @State private var tab: Tab = .widgets
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Wijeti")
-                    .font(.title2.bold())
-                Spacer()
-                Picker("", selection: $tab) {
-                    ForEach(Tab.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 280)
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 18)
-            .padding(.bottom, 12)
-
+            header
             Divider()
-
             Group {
-                switch tab {
+                switch model.selectedTab {
                 case .widgets: widgetsTab
                 case .general: generalTab
                 case .permissions:
@@ -149,9 +134,7 @@ struct PreferencesView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-
             Divider()
-
             HStack {
                 Text(model.status.isEmpty ? WidgetsFooterNote.text : model.status)
                     .font(.caption)
@@ -170,56 +153,98 @@ struct PreferencesView: View {
         .frame(width: 520, height: 620)
     }
 
-    private var widgetsTab: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
+    // MARK: - Header
+
+    private var header: some View {            HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Installed widgets")
-                        .font(.headline)
-                    Text(model.rows.isEmpty
-                         ? "Nothing installed yet."
-                         : "\(model.rows.count) installed")
+                    HStack(spacing: 8) {
+                        Image(systemName: "gear")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.blue)
+                            .frame(width: 22, height: 22)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(Color(nsColor: .controlBackgroundColor))
+                            )
+                        Text("Wijeti")
+                            .font(.title3.bold())
+                    }
+                    Text("Settings")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Add Widgets…", action: onOpenLibrary)
+                Picker("", selection: $model.selectedTab) {
+                    ForEach(PreferencesModel.Tab.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 280)
             }
             .padding(.horizontal, 20)
-            .padding(.top, 14)
+            .padding(.top, 16)
             .padding(.bottom, 10)
+    }
 
-            if model.rows.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: "square.dashed.on.square")
-                        .font(.system(size: 30))
-                        .foregroundStyle(.secondary)
-                    Text("Open the Widget Library to browse bundled widgets,")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    Text("or drop your own widget folder onto it.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    Button("Open Widget Library…", action: onOpenLibrary)
-                        .padding(.top, 4)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 6) {
+    // MARK: - Widgets tab (inset-grouped sections)
+
+    private var widgetsTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                insetGroupedSection(
+                    badge: "square.grid.2x2",
+                    badgeColor: .blue,
+                    title: "Installed widgets",
+                    subtitle: model.rows.isEmpty
+                        ? "Nothing installed yet."
+                        : "\(model.rows.count) installed",
+                    footer: "Open the Widget Library to browse bundled widgets, or drop your own widget folder onto it."
+                ) {
+                    if model.rows.isEmpty {
+                        emptyWidgetsRow
+                    } else {
                         ForEach(model.rows) { row in
                             widgetRow(row)
                         }
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 10)
                 }
+                .padding(.bottom, 8)
+
+                insetGroupedSection(
+                    badge: "plus.square.on.square",
+                    badgeColor: .green,
+                    title: "Add widgets",
+                    subtitle: "Browse bundled widgets or install your own.",
+                    footer: nil
+                ) {
+                    Button("Open Widget Library…", action: onOpenLibrary)                            .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .keyboardShortcut("i", modifiers: .command)
+                }
+                .padding(.bottom, 8)
             }
+            .padding(.horizontal, 20)
         }
     }
 
+    private var emptyWidgetsRow: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "square.dashed.on.square")
+                .font(.system(size: 30))
+                .foregroundStyle(.secondary)
+            Text("Open the Widget Library to browse bundled widgets,")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Text("or drop your own widget folder onto it.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.top, 10)
+    }
+
     private func widgetRow(_ row: PreferencesModel.WidgetRow) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             Toggle("Visible", isOn: Binding(
                 get: { !row.hidden },
                 set: { model.setHidden(!$0, for: row.id) }
@@ -242,63 +267,193 @@ struct PreferencesView: View {
                 .font(.caption2.monospaced())
                 .foregroundStyle(.tertiary)
         }
-        .padding(10)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
     }
+
+    // MARK: - General tab (inset-grouped sections)
 
     private var generalTab: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Widgets folder")
-                    .font(.callout.weight(.medium))
-                Text(model.widgetDirectory)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                HStack(spacing: 10) {
-                    Button("Choose…") { model.chooseWidgetDirectory() }
-                    Button("Reveal in Finder") { model.revealWidgetDirectory() }
+            VStack(alignment: .leading, spacing: 0) {
+                insetGroupedSection(
+                    badge: "folder",
+                    badgeColor: .gray,
+                    title: "Widgets folder",
+                    subtitle: model.widgetDirectory,
+                    footer: "Choose a folder or reveal it in Finder. Changing the folder requires a restart."
+                ) {
+                    HStack(spacing: 10) {
+                        Button("Choose…") { model.chooseWidgetDirectory() }
+                            .buttonStyle(.bordered)
+                        Button("Reveal in Finder") { model.revealWidgetDirectory() }
+                            .buttonStyle(.bordered)
+                    }
                 }
+                .padding(.bottom, 10)
 
-                Divider()
+                insetGroupedSection(
+                    badge: "keyboard.badge.ellipsis",
+                    badgeColor: .orange,
+                    title: "Login shell",
+                    subtitle: "Run widget commands through your shell profile.",
+                    footer: "Some widgets need your shell profile for PATH and aliases. Turning this on restarts the widget server."
+                ) {
+                    Toggle("Run commands through a login shell", isOn: Binding(
+                        get: { model.loginShell },
+                        set: { model.setLoginShell($0) }
+                    ))
+                }
+                .padding(.bottom, 10)
 
-                Toggle("Run widget commands through a login shell", isOn: Binding(
-                    get: { model.loginShell },
-                    set: { model.setLoginShell($0) }
-                ))
-                Text("Some widgets need your shell profile for PATH and aliases. "
-                     + "Turning this on restarts the widget server.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                insetGroupedSection(
+                    badge: "person.badge.key",
+                    badgeColor: .purple,
+                    title: "Launch at login",
+                    subtitle: "Start Wijeti when you log in.",
+                    footer: nil
+                ) {
+                    Toggle("Start Wijeti at login", isOn: Binding(
+                        get: { model.launchAtLogin },
+                        set: { model.setLaunchAtLogin($0) }
+                    ))
+                }
+                .padding(.bottom, 10)
 
-                Toggle("Start Wijeti at login", isOn: Binding(
-                    get: { model.launchAtLogin },
-                    set: { model.setLaunchAtLogin($0) }
-                ))
-
-                Divider()
-
-                HStack(spacing: 10) {
-                    Button("Refresh All") { model.refreshAll() }
-                    Button("Reload Widgets") { model.reloadWidgets() }
-                    Button("Restart Server") { model.restartServer() }
+                insetGroupedSection(
+                    badge: "arrow.clockwise",
+                    badgeColor: .blue,
+                    title: "Refresh and reload",
+                    subtitle: "Force a refresh, reload all widgets, or restart the server.",
+                    footer: nil
+                ) {
+                    HStack(spacing: 10) {
+                        Button("Refresh All") { model.refreshAll() }
+                            .buttonStyle(.bordered)
+                        Button("Reload Widgets") { model.reloadWidgets() }
+                            .buttonStyle(.bordered)
+                        Button("Restart Server") { model.restartServer() }
+                            .buttonStyle(.bordered)
+                    }
                 }
             }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20)
         }
     }
 }
 
+// MARK: - PreferencesView (compatibility alias)
+
+/// Compatibility type used by code that still references `PreferencesView`.
+typealias PreferencesView = WidgetSettingsView
+
 enum WidgetsFooterNote {
     static let text = "Widgets update on their own schedule."
 }
+
+// MARK: - Inset-grouped section view (iOS Settings style, adapted for macOS)
+
+/// A section that mimics an iOS `.insetGrouped` list row with a leading icon badge,
+/// a title, a subtitle/foreground-secondary value, and an optional footer.
+private struct InsetGroupedSection<Content: View>: View {
+    let badge: String
+    let badgeColor: Color
+    let title: String
+    let subtitle: String
+    let footer: String?
+    let content: Content
+
+    init(
+        badge: String,
+        badgeColor: Color = .blue,
+        title: String,
+        subtitle: String,
+        footer: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.badge = badge
+        self.badgeColor = badgeColor
+        self.title = title
+        self.subtitle = subtitle
+        self.footer = footer
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Section header row: icon badge + title + subtitle (secondary).
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(badgeColor.opacity(0.16))
+                    Image(systemName: badge)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(badgeColor)
+                }
+                .frame(width: 26, height: 26)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.callout.weight(.medium))
+                    if !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 4)
+
+            Divider()
+                .padding(.horizontal, 16)
+
+            content
+                .padding(.horizontal, 16)
+                .padding(.top, 2)
+
+            if let footer, !footer.isEmpty {
+                Text(footer)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+            } else {
+                Color.clear
+                    .padding(.bottom, 12)
+            }
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .cornerRadius(10)
+    }
+}
+
+/// Convenience wrapper so callers can write `insetGroupedSection(badge:title:subtitle:footer:content:)`.
+private func insetGroupedSection(
+    badge: String,
+    badgeColor: Color = .blue,
+    title: String,
+    subtitle: String,
+    footer: String? = nil,
+    @ViewBuilder content: () -> some View
+) -> some View {
+    InsetGroupedSection(
+        badge: badge,
+        badgeColor: badgeColor,
+        title: title,
+        subtitle: subtitle,
+        footer: footer,
+        content: content
+    )
+}
+
+// MARK: - Preferences window controller
 
 /// Hosts the SwiftUI preferences window.
 public final class PreferencesWindowController: NSObject, NSWindowDelegate {
@@ -319,7 +474,7 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate {
     public func show() {
         if window == nil {
             NSLog("opening preferences window")
-            let view = PreferencesView(
+            let view = WidgetSettingsView(
                 model: model,
                 probe: probe,
                 sources: sources,
@@ -330,7 +485,6 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate {
             window.title = "Wijeti Preferences"
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.isReleasedWhenClosed = false
-            window.setContentSize(NSSize(width: 520, height: 620))
             window.delegate = self
             self.window = window
         }
@@ -343,4 +497,7 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate {
 
     /// Set by the app delegate so "Add Widgets" can open the library window.
     public var onOpenLibrary: (() -> Void)?
+
+    /// Opens the widget library from the preferences window.
+    public func openLibrary() { onOpenLibrary?() }
 }
