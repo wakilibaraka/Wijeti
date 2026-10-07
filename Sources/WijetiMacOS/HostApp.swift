@@ -216,7 +216,7 @@ public final class HostApp {
     }
 
     public func visitGallery() {
-        if let url = URL(string: "http://tracesof.net/uebersicht/widgets") {
+        if let url = URL(string: "https://github.com/felixhageloh/uebersicht-widgets") {
             platform.openExternal(url)
         }
     }

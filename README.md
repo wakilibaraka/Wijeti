@@ -13,7 +13,7 @@ Apple ships settings surfaces today.
   in the right place — you never need to know the path.
 - **Modern menu bar.** A compact status item with a categorized menu, live status text, and
   keyboard shortcuts. Refresh, reload, open the library, open the widgets folder, visit the
-  widget gallery, Preferences, or Quit — all from one place.
+  widget gallery (community widgets), Preferences, or Quit — all from one place.
 - **Onboarding and Settings, the iOS-style way.** First-launch onboarding leads with SF
   Symbols and a vertical feature list, with a flat call-to-action button pinned to the bottom.
   Settings uses inset-grouped sections with small icon badges that telegraph what each group
