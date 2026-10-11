@@ -29,7 +29,7 @@ public final class WidgetLibraryWindow: NSWindowController {
         window.isReleasedWhenClosed = false
         super.init(window: window)
         window.center()
-        window.conditionalSetContentSize(width: 1180, height: 660)
+        window.setContentSize(NSSize(width: 1180, height: 660))
     }
 
     /// First show: seed a selection so the preview pane is never dead space.
@@ -701,49 +701,79 @@ struct WidgetLibraryView: View {
 
     private var installedSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
+            HStack(spacing: 6) {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.caption)
                     .foregroundStyle(.green)
                 Text("Your widgets")
                     .font(.subheadline.weight(.semibold))
-                Text("(\(model.installed.count))")
-                    .font(.caption)
+                Text("\(model.installed.count)")
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(Color(nsColor: .controlBackgroundColor)))
                 Spacer()
             }
-            .padding(.bottom, 8)
+            .padding(.bottom, 6)
 
             ForEach(model.installed) { widget in
                 installedWidgetRow(widget)
-                Divider().padding(.leading, 12)
+                if widget.id != model.installed.last?.id {
+                    Divider().padding(.leading, 12)
+                }
             }
         }
     }
 
     private func installedWidgetRow(_ widget: WidgetLibraryModel.Installed) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
+            HStack(spacing: 8) {
                 Toggle("", isOn: Binding(
                     get: { widget.visible },
                     set: { model.setVisible($0, for: widget.id) }
                 ))
                 .labelsHidden()
-                Text(widget.title)
-                    .font(.callout.weight(.medium))
-                    .lineLimit(1)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(widget.title)
+                        .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                    Text(widget.visible ? "Visible" : "Hidden — still installed")
+                        .font(.caption2)
+                        .foregroundStyle(widget.visible ? Color.secondary : Color.orange)
+                }
+
                 Spacer()
+
+                // Distinct actions: a disabled (hidden) widget gets "Enable"; a visible
+                // one gets Remove (delete) via a separate, red affordance.
+                if !widget.visible {
+                    Button {
+                        model.setVisible(true, for: widget.id)
+                    } label: {
+                        Label("Enable", systemImage: "eye")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .controlSize(.small)
+                    .help("Show \(widget.title) on the desktop again")
+                }
+
                 Button {
                     if widget.visible {
                         model.confirmRemove(widget)
-                    } else {
-                        model.confirmDisable(widget)
                     }
                 } label: {
-                    Image(systemName: widget.visible ? "trash" : "eye.slash")
+                    Image(systemName: "trash")
+                        .foregroundStyle(widget.visible ? Color.red : Color(nsColor: .tertiaryLabelColor))
                 }
                 .buttonStyle(.borderless)
-                .help(widget.visible ? "Remove \(widget.title)" : "Enable \(widget.title)")
+                .disabled(!widget.visible)
+                .help(widget.visible
+                    ? "Remove \(widget.title) from disk (cannot be undone)"
+                    : "Enable the widget before removing it")
             }
             HStack(spacing: 12) {
                 Toggle("Behind apps", isOn: Binding(
@@ -760,6 +790,8 @@ struct WidgetLibraryView: View {
                 Button("Preview") {
                     if let preset = model.catalog.presets.first(where: { $0.id == widget.id }) {
                         model.select(preset)
+                    } else {
+                        model.status = "\(widget.title) is not part of the bundled library — only bundled widgets have a live preview."
                     }
                 }
                 .font(.caption2)
@@ -768,29 +800,51 @@ struct WidgetLibraryView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 5)
     }
 
     /// Flat list of library presets (no section headers — filter chips handle categories).
     private var libraryList: some View {
         LazyVStack(alignment: .leading, spacing: 8) {
             if model.filteredPresets.isEmpty {
-                VStack(spacing: 6) {
-                    if !model.search.isEmpty || model.selectedCategory != nil {
-                        Text("No widgets match")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("No bundled widgets")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                libraryEmptyState
             } else {
                 ForEach(model.filteredPresets) { preset in
                     libraryWidgetRow(preset)
                 }
             }
         }
+    }
+
+    /// Purpose-built empty states: filtered vs. genuinely empty library.
+    private var libraryEmptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: model.selectedCategory == nil && model.search.isEmpty
+                ? "square.grid.2x2" : "magnifyingglass")
+                .font(.system(size: 30, weight: .light))
+                .foregroundStyle(.tertiary)
+
+            if model.selectedCategory == nil && model.search.isEmpty {
+                Text("No bundled widgets yet")
+                    .font(.callout.weight(.medium))
+                Text("You can still add your own — drop a folder or .zip here, or use Install Your Own…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            } else {
+                Text("No widgets match")
+                    .font(.callout.weight(.medium))
+                Button("Clear filters") {
+                    model.search = ""
+                    model.selectedCategory = nil
+                }
+                .controlSize(.small)
+                .buttonStyle(.borderless)
+                .foregroundStyle(.tint)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
     }
 
     private func libraryWidgetRow(_ preset: Preset) -> some View {
@@ -821,10 +875,11 @@ struct WidgetLibraryView: View {
                         model.confirmRemoveInstalled(preset)
                     } label: {
                         Image(systemName: "trash")
+                            .foregroundStyle(.red)
                     }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
-                    .help("Remove \(preset.title)")
+                    .help("Remove \(preset.title) from disk (cannot be undone)")
                 }
             } else {
                 Button("Add") {
@@ -933,6 +988,21 @@ struct WidgetLibraryView: View {
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 2)
                                     .background(Capsule().fill(Color.green.opacity(0.15)))
+
+                                // Disable = hide without deleting.
+                                Button {
+                                    if let widget = model.installed.first(where: { $0.id == preset.id }),
+                                       widget.visible {
+                                        model.confirmDisable(widget)
+                                    }
+                                } label: {
+                                    Image(systemName: "eye.slash")
+                                }
+                                .buttonStyle(.borderless)
+                                .controlSize(.small)
+                                .help("Disable — hide \(preset.title) without uninstalling it")
+
+                                // Remove = delete from disk; red, destructive.
                                 Button("Remove") {
                                     model.confirmRemoveInstalled(preset)
                                 }

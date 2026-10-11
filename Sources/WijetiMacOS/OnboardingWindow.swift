@@ -4,10 +4,9 @@ import WijetiCore
 
 /// First-launch onboarding surface.
 ///
-/// Designed as a native macOS window that borrows the iOS "Feature Highlights" lead style:
-/// a compact app-title header, a vertical stack of feature cards each led by an SF Symbol,
-/// bold headline weight on the title, `.secondary`-styled descriptions, and a flat
-/// primary call-to-action pinned to the bottom with a press spring.
+/// A stepped, card-style introduction: each page pairs a colourful symbol card with a
+/// title and short body, a step-dots indicator tracks progress, and the final step
+/// covers permissions/data sources before dismissing into the Widget Library.
 ///
 /// Once dismissed, it is never shown again for that user (stored in `UserDefaults`).
 public final class OnboardingWindowController: NSObject, NSWindowDelegate {
@@ -37,23 +36,36 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.isReleasedWhenClosed = false
             window.delegate = self
-            window.center()
-            window.conditionalSetContentSize(width: 560, height: 560)
+            window.titlebarAppearsTransparent = true
             window.isOpaque = false
-            window.backgroundColor = NSColor.windowBackgroundColor
-            window.titlebarAppearsTransparent = false
+            window.backgroundColor = .clear
             self.window = window
         }
 
+        centerOnMainScreen()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+    }
 
-        // The window's first responder order should include the CTA so Return/Enter
-        // submits it. We prefer the button to be the key view on show.
-        let theView = window?.contentViewController?.view
-        if let button = theView?.descendantView(matching: { $0.isKind(of: NSButton.self) }) as? NSButton {
-            window?.initialFirstResponder = button
+    /// Centers on the visible frame of the screen the window is (or will be) on, so the
+    /// onboarding card sits in the middle of the user's display rather than wherever the
+    /// compositor puts a new window.
+    @MainActor
+    private func centerOnMainScreen() {
+        guard let window else { return }
+        let screen = window.screen ?? NSScreen.main
+        guard let visible = screen?.visibleFrame else {
+            window.center()
+            return
         }
+        let size = window.frameRect(forContentRect: NSRect(
+            x: 0, y: 0, width: 600, height: 580
+        )).size
+        let origin = NSPoint(
+            x: visible.midX - size.width / 2,
+            y: visible.midY - size.height / 2
+        )
+        window.setFrameTopLeftPoint(NSPoint(x: origin.x, y: origin.y + size.height))
     }
 
     @MainActor
@@ -80,38 +92,98 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     }
 }
 
-extension NSWindow {
-    func conditionalSetContentSize(width: CGFloat, height: CGFloat) {
-        if contentViewController?.preferredContentSize == .zero {
-            setContentSize(NSSize(width: width, height: height))
-        }
-    }
-}
-
-extension NSView {
-    func descendantView(
-        matching predicate: (NSView) -> Bool,
-        after view: NSView? = nil
-    ) -> NSView? {
-        let start = view ?? self
-        if predicate(start) { return start }
-        for sub in start.subviews {
-            if let found = descendantView(matching: predicate, after: sub) {
-                return found
-            }
-        }
-        return nil
-    }
-}
-
 // MARK: - SwiftUI onboarding view
 
-/// Small view model so the CTA animation state lives on an ObservableObject rather than
-/// as a local `@State` (the toolchain cannot resolve SwiftUI's `State` macro in this
-/// AppKit/SwiftUI mix).
 @MainActor
 private final class OnboardingViewModel: ObservableObject {
-    @Published var buttonPressed = false
+    /// 0-based step index. Steps are: welcome, library, permissions, done.
+    @Published var step = 0
+    let stepCount = 4
+
+    var isFirst: Bool { step == 0 }
+    var isLast: Bool { step == stepCount - 1 }
+    /// The permissions step sits after the plain steps, before "done".
+    var isPermissions: Bool { step == stepsBeforePermissions }
+    /// Number of colourful steps shown before the permissions step.
+    var stepsBeforePermissions: Int { 3 }
+
+    func advance() {
+        step = min(step + 1, stepCount - 1)
+    }
+
+    func back() {
+        step = max(step - 1, 0)
+    }
+}
+
+/// One step of the onboarding flow: symbol, tint, headline, and body copy.
+private struct OnboardingStep: Identifiable {
+    let id: Int
+    let symbol: String
+    let tint: Color
+    let title: String
+    let body: String
+}
+
+/// The permissions step differs from the plain steps: it lists permissions with live
+/// status and a settings shortcut, plus the data sources note.
+private struct OnboardingPermissionsView: View {
+    @StateObject private var probe = PermissionProbe()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Wijeti itself needs almost nothing. These are for the widgets you add — "
+                 + "macOS only prompts once per app, and a few are granted in System Settings.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(spacing: 0) {
+                ForEach(Array(Permission.Kind.all.enumerated()), id: \.element) { index, kind in
+                    permissionRow(kind)
+                    if index < Permission.Kind.all.count - 1 {
+                        Divider().padding(.leading, 12)
+                    }
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
+            )
+        }
+        .onAppear { probe.refresh() }
+    }
+
+    private func permissionRow(_ kind: Permission.Kind) -> some View {
+        let granted = probe.statuses[kind] ?? false
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: granted ? "checkmark.circle.fill" : "circle.dashed")
+                .foregroundStyle(granted ? Color.green : Color.secondary)
+                .font(.callout)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(kind.title).font(.callout.weight(.medium))
+                Text(kind.reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(kind.isProbeable ? "Request" : "Open Settings") {
+                probe.request(kind)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { probe.refresh() }
+            }
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
 }
 
 struct OnboardingView: View {
@@ -119,190 +191,172 @@ struct OnboardingView: View {
     let onDismiss: () -> Void
     @StateObject private var viewModel = OnboardingViewModel()
 
+    private var steps: [OnboardingStep] {
+
+        [
+            OnboardingStep(
+                id: 0,
+                symbol: "sparkles",
+                tint: Color(red: 0.35, green: 0.45, blue: 0.95),
+                title: "Welcome to Wijeti",
+                body: "Desktop widgets on macOS, the modern way. Wijeti lives in your menu bar, "
+                    + "runs widgets on their own schedule, and keeps the rest of your desktop clear."
+            ),
+            OnboardingStep(
+                id: 1,
+                symbol: "square.grid.2x2",
+                tint: Color(red: 0.95, green: 0.55, blue: 0.25),
+                title: "A library, not a folder",
+                body: "Browse the bundled widget library by category and search, then install with "
+                    + "one click. Want your own? Drop a widget folder or a .zip onto the window — "
+                    + "or use Install Your Own… — and never touch Finder to wire one up."
+            ),
+            OnboardingStep(
+                id: 2,
+                symbol: "slider.horizontal.3",
+                tint: Color(red: 0.30, green: 0.75, blue: 0.45),
+                title: "Make it yours",
+                body: "Toggle each widget on or off, choose whether it sits behind other apps or "
+                    + "shows on every screen, preview it live, and remove it just as easily as it "
+                    + "arrived. Everything is a single click away, with no hidden state."
+            ),
+        ]
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            header
+            if viewModel.isPermissions {
+                permissionsStep
+            } else if let step = currentStep {
+                stepHeader(step)
+            }
+
             Divider()
-            featureList
-            Divider()
-            ctaFooter
+            footer
         }
+        .frame(width: 600, height: 580)
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color(nsColor: .windowBackgroundColor))
         )
-        .frame(width: 560, height: 560)
     }
 
-    // MARK: - Header
+    /// The current colorful step, or nil on the permissions step (which is a different
+    /// layout entirely).
+    private var currentStep: OnboardingStep? {
+        guard viewModel.step < steps.count else { return nil }
+        return steps[viewModel.step]
+    }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Image(systemName: "bolt.fill")
-                    .font(.system(size: 22))
-                    .foregroundStyle(.blue)
-                Image(systemName: "bolt.fill")
-                    .font(.system(size: 22))
-                    .foregroundStyle(.blue)
-                Text("Wijeti")
-                    .font(.title.bold())
-                    .foregroundStyle(.primary)
-                Spacer()
-                Button {
-                    onDismiss()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Close")
+    private func stepHeader(_ step: OnboardingStep) -> some View {
+        VStack(alignment: .center, spacing: 12) {
+            // Colourful rounded "app icon" tile.
+            RoundedRectangle(cornerRadius: 18)
+                .fill(
+                    LinearGradient(
+                        colors: [step.tint, step.tint.opacity(0.7)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: 76, height: 76)
+                .overlay(
+                    Image(systemName: step.symbol)
+                        .font(.system(size: 34, weight: .medium))
+                        .foregroundStyle(.white)
+                )
+                .shadow(color: step.tint.opacity(0.35), radius: 10, y: 4)
+
+            Text(step.title)
+                .font(.system(.title2, design: .rounded).weight(.bold))
+                .multilineTextAlignment(.center)
+
+            Text(step.body)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .lineSpacing(4)
+                .padding(.horizontal, 26)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(maxHeight: .infinity, alignment: .center)
+        .padding(.top, 22)
+        .padding(.bottom, 16)
+        .transition(.opacity)
+    }
+
+    private var permissionsStep: some View {
+        ScrollView {
+            VStack(alignment: .center, spacing: 14) {
+                RoundedRectangle(cornerRadius: 18)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color(red: 0.90, green: 0.35, blue: 0.38),
+                                     Color(red: 0.85, green: 0.30, blue: 0.60)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 76, height: 76)
+                    .overlay(
+                        Image(systemName: "lock.shield")
+                            .font(.system(size: 34, weight: .medium))
+                            .foregroundStyle(.white)
+                    )
+                    .shadow(color: Color(red: 0.85, green: 0.30, blue: 0.60).opacity(0.35), radius: 10, y: 4)
+                    .padding(.top, 22)
+
+                Text("Permissions & data sources")
+                    .font(.system(.title2, design: .rounded).weight(.bold))
+
+                OnboardingPermissionsView()
+                    .padding(.horizontal, 22)
             }
-            .padding(.horizontal, 22)
-            .padding(.top, 22)
-
-            Text("Desktop widgets, on your terms.")
-                .font(.title2.weight(.medium))
-                .padding(.horizontal, 22)
-
-            Text(
-                "A native Swift host for desktop widgets on macOS — a modern menu bar, "
-                + "a Widget Library without Finder, and a Settings panel built the way Apple "
-                + "ships settings surfaces today."
-            )
-            .font(.body)
-            .foregroundStyle(.secondary)
-            .lineSpacing(4)
-            .padding(.top, 8)
-            .padding(.horizontal, 22)
             .padding(.bottom, 16)
         }
+        .frame(maxHeight: .infinity)
     }
 
-    // MARK: - Feature list (iOS "Feature Highlights" lead style)
-
-    private var featureList: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            featureRow(
-                symbol: "minimap",
-                title: "Widget Library without Finder",
-                body: "Browse bundled widgets by category, search, and install in one click. "
-                    + "Drag a widget folder onto the window, or use Install Your Own… — you "
-                    + "never need to know where widgets live on disk."
-            )
-
-            featureRow(
-                symbol: "figure.walk",
-                title: "Widgets that run on their own schedule",
-                body: "Each widget has its own refresh rhythm. Wijeti hides in the menu bar so "
-                    + "your desktop stays clear, and widgets can sit behind other apps when you "
-                    + "want them out of the way."
-            )
-
-            featureRow(
-                symbol: "lock.doc",
-                title: "Permissions and data sources in one place",
-                body: "Location, Full Disk Access, Automation, and Notifications — each one shown "
-                    + "with its real status, and a direct link to the exact System Settings pane. "
-                    + "Weather uses Open-Meteo, which needs no API key."
-            )
-
-            featureRow(
-                symbol: "character.man.text.serve.held",
-                title: "Scriptable from day one",
-                body: "AppleScript speaks `refresh`, `reload`, `count widgets`, and `every widget` "
-                    + "with `id`, `hidden`, and screen placement. Driving Wijeti from a script or "
-                    + "another app works out of the box."
-            )
-
-            featureRow(
-                symbol: "arrow.down.circle",
-                title: "Add widgets without opening a folder",
-                body: "Drop a widget folder, a `.jsx` / `.coffee` / `.js` file, or a `.zip` archive "
-                    + "onto the Widget Library — or click Install Your Own… to pick one. Wijeti "
-                    + "copies it into place, reloads the server, and shows it in your widgets list "
-                    + "where you can toggle it on, send it behind other apps, or remove it with a "
-                    + "confirmation popup. You never need to know where widgets live on disk."
-            )
-        }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 12)
-    }
-
-    private func featureRow(symbol: String, title: String, body: String) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            Image(systemName: symbol)
-                .font(.title2)
-                .foregroundStyle(.blue)
-                .frame(width: 28)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.primary)
-
-                Text(body)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineSpacing(2)
+    private var footer: some View {
+        HStack(spacing: 14) {
+            // Step dots on the left.
+            HStack(spacing: 6) {
+                ForEach(0..<viewModel.stepCount, id: \.self) { index in
+                    Circle()
+                        .fill(index == viewModel.step ? Color.accentColor : Color.secondary.opacity(0.3))
+                        .frame(width: 7, height: 7)
+                        .animation(.easeInOut(duration: 0.18), value: viewModel.step)
+                }
             }
 
             Spacer()
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-    }
 
-    // MARK: - CTA footer (flat button pinned to bottom, press spring)
+            Button("Back") {
+                withAnimation(.easeInOut(duration: 0.2)) { viewModel.back() }
+            }
+            .font(.subheadline.weight(.medium))
+            .buttonStyle(.bordered)
+            .disabled(viewModel.isFirst)
+            .opacity(viewModel.isFirst ? 0.4 : 1)
 
-    private var ctaFooter: some View {
-        HStack(spacing: 14) {
-            Spacer()
-
-            Button(action: {
-                withAnimation(.interactiveSpring(response: 0.35, dampingFraction: 0.75)) {
-                    viewModel.buttonPressed = true
-                }
-                // Briefly depress, then dismiss after the spring settles.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            if viewModel.isPermissions {
+                Button("Finish — Open Library") {
                     onDismiss()
                 }
-            }) {
-                Text("Get Started")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(
-                        Capsule()
-                            .fill(
-                                LinearGradient(
-                                    colors: [.blue, .blue.opacity(0.85)],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
-                    )
-                    .compositingGroup()
-                    .shadow(color: .black.opacity(viewModel.buttonPressed ? 0.25 : 0.12), radius: viewModel.buttonPressed ? 6 : 3, x: 0, y: viewModel.buttonPressed ? 2 : 1)
+                .font(.subheadline.weight(.semibold))
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+            } else {
+                Button(viewModel.isFirst ? "Get Started" : "Next") {
+                    withAnimation(.easeInOut(duration: 0.2)) { viewModel.advance() }
+                }
+                .font(.subheadline.weight(.semibold))
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .keyboardShortcut(.defaultAction)
             }
-            .buttonStyle(.plain)
-            .scaleEffect(viewModel.buttonPressed ? 0.97 : 1.0)
-            .animation(.easeOut(duration: 0.12), value: viewModel.buttonPressed)
-
-            Button("I'll set it up later") {
-                onDismiss()
-            }
-            .font(.subheadline.weight(.regular))
-            .foregroundStyle(.secondary)
-            .buttonStyle(.plain)
-            .keyboardShortcut(.defaultAction)
         }
         .padding(.horizontal, 22)
-        .padding(.bottom, 20)
+        .padding(.vertical, 16)
     }
 }
