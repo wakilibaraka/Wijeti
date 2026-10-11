@@ -60,6 +60,23 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private func dismiss() {
         UserDefaults.standard.set(true, forKey: Self.didCompleteKey)
         window?.performClose(nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            // Open the widgets library automatically so the first-launch path ends on the
+            // place where the user actually picks widgets, not back on the desktop.
+            self?.openLibraryAfterOnboarding()
+        }
+    }
+
+    /// Best-effort open of the widgets library after onboarding dismiss.
+    /// The app delegate owns the library window, so we ask the app to perform the same
+    /// action the tray menu uses; if nothing is wired, this is a silent no-op.
+    @MainActor
+    private func openLibraryAfterOnboarding() {
+        guard let app = NSApp else { return }
+        if let delegate = app.delegate, delegate.responds(to: NSSelectorFromString("openLibrary")) {
+            delegate.perform(NSSelectorFromString("openLibrary"))
+            return
+        }
     }
 }
 

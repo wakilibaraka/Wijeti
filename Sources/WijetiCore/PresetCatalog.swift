@@ -39,7 +39,7 @@ public struct PresetCatalog: Codable, Equatable, Sendable {
     }
 
     /// Category order for the sidebar. Anything unlisted sorts after these, alphabetically.
-    static let preferredOrder = [
+    public static let preferredOrder = [
         "Weather", "Calendar", "Clock", "System", "Music", "Lyrics", "Media",
         "Finance", "Productivity", "Social", "Developer", "Fun", "Quotes", "Other",
     ]

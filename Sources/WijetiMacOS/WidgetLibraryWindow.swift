@@ -205,6 +205,10 @@ public final class WidgetLibraryModel: ObservableObject {
     /// Popup button label for the action to run when dismissed.
     @Published public var popupActionLabel = ""
     @Published public var popupAction: (() -> Void)?
+    /// Which installed-widget view is currently shown: the full list, or newest first.
+    @Published public var showRecentFirst = false
+    /// Last-seen timestamps used to sort the "recently installed" view.
+    private var lastSeenAt: [String: Date] = [:]
 
     let previewController: WidgetPreviewController
     private let host: HostApp
@@ -281,34 +285,45 @@ public final class WidgetLibraryModel: ObservableObject {
         installedPresetIDs = Set(
             catalog.presets.map(\.id).filter { widgetInstalled($0) }
         )
+        // Seed the recency tracker so "recently installed" is meaningful after a reload.
+        let now = Date()
+        for id in host.widgetIDs {
+            lastSeenAt[id] = lastSeenAt[id] ?? now
+        }
     }
 
     // MARK: - Library
 
+    /// Categories for the filter chip bar (in preferred order).
     public var categories: [String] {
-        var seen = Set<String>()
-        return groups.map { group in
-            seen.insert(group.category)
-            return group.category
-        }
+        PresetCatalog.preferredOrder.filter { category in catalog.presets.contains { $0.category == category } }
     }
 
-    /// Library rows after the category filter and the search box.
-    public var groups: [PresetCatalog.Group] {
-        let filtered = catalog.groups.compactMap { group -> PresetCatalog.Group? in
-            if let selectedCategory, group.category != selectedCategory { return nil }
-            guard !search.isEmpty else { return group }
+    /// All presets, optionally filtered by category and search. Flat list — no section
+    /// headers, so the filter chips at the top are the only category UI (no duplication).
+    public var filteredPresets: [Preset] {
+        var presets = catalog.presets
+        if let selectedCategory {
+            presets = presets.filter { $0.category == selectedCategory }
+        }
+        if !search.isEmpty {
             let needle = search.lowercased()
-            let matching = group.presets.filter {
+            presets = presets.filter {
                 $0.title.lowercased().contains(needle)
                     || $0.description.lowercased().contains(needle)
                     || $0.id.lowercased().contains(needle)
             }
-            return matching.isEmpty ? nil : PresetCatalog.Group(
-                category: group.category, presets: matching
-            )
         }
-        return filtered
+        return presets.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    /// Installed presets ordered by install time, newest first.
+    public var recentlyInstalledPresets: [Preset] {
+        installedPresetIDs.compactMap { id in
+            catalog.presets.first(where: { $0.id == id })
+        }.sorted { left, right in
+            (lastSeenAt[left.id] ?? .distantPast) > (lastSeenAt[right.id] ?? .distantPast)
+        }
     }
 
     public func isInstalled(_ preset: Preset) -> Bool { installedPresetIDs.contains(preset.id) }
@@ -330,6 +345,7 @@ public final class WidgetLibraryModel: ObservableObject {
                 // than relying on the server's defaults matching ours.
                 for id in result.installed { host.updateSettings(id) { $0.hidden = false } }
                 host.reloadWidgets()
+                markInstalled(preset)
             }
             for failure in result.failures {
                 status = "\(preset.title): \(failure.reason)"
@@ -354,13 +370,38 @@ public final class WidgetLibraryModel: ObservableObject {
         install(preset)
     }
 
-    /// Shows a confirmation popup before removing.
+    /// Shows a confirmation popup before removing an installed widget.
     public func confirmRemove(_ widget: Installed) {
         popupTitle = "Remove \(widget.title)?"
-        popupMessage = "This will remove \"\(widget.title)\" from your widgets. This cannot be undone."
+        popupMessage = "This will remove \"\(widget.title)\" from your widgets and stop it from running. This cannot be undone."
         popupActionLabel = "Remove"
         popupAction = { [weak self] in self?.doRemove(widget) }
         showPopup = true
+    }
+
+    /// Shows a confirmation popup before removing a preset that is already installed.
+    public func confirmRemoveInstalled(_ preset: Preset) {
+        guard let widget = installed.first(where: { $0.id == preset.id }) else { return }
+        popupTitle = "Remove \(widget.title)?"
+        popupMessage = "This will remove \"\(widget.title)\" from your widgets and stop it from running. This cannot be undone."
+        popupActionLabel = "Remove"
+        popupAction = { [weak self] in self?.doRemove(widget) }
+        showPopup = true
+    }
+
+    /// Shows a confirmation popup before disabling a widget without deleting it.
+    public func confirmDisable(_ widget: Installed) {
+        guard !widget.visible else { return }
+        popupTitle = "Disable \(widget.title)?"
+        popupMessage = "\"\(widget.title)\" will be hidden from your desktop until you turn it back on. It stays installed."
+        popupActionLabel = "Disable"
+        popupAction = { [weak self] in self?.doDisable(widget) }
+        showPopup = true
+    }
+
+    private func doDisable(_ widget: Installed) {
+        showPopup = false
+        setVisible(false, for: widget.id)
     }
 
     private func doRemove(_ widget: Installed) {
@@ -500,6 +541,10 @@ public final class WidgetLibraryModel: ObservableObject {
         reload()
     }
 
+    public func markInstalled(_ preset: Preset) {
+        lastSeenAt[preset.id] = Date()
+    }
+
     public func refreshAll() {
         host.refreshWidgets()
         status = "Refreshed."
@@ -595,23 +640,44 @@ struct WidgetLibraryView: View {
             // Category filter pills
             categoryFilter
 
-            // Content: installed widgets section + library catalog
-            if model.installed.isEmpty && model.search.isEmpty && model.selectedCategory == nil {
-                // Show all library by default when nothing installed and no filter
-                librarySection
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        // Installed widgets section
-                        if !model.installed.isEmpty {
-                            installedSection
-                        }
-                        // Library catalog section (filtered)
-                        librarySection
+            // Content: installed widgets + library catalog (always in a ScrollView)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    // Installed widgets section
+                    if !model.installed.isEmpty {
+                        installedSection
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 16)
+                    // Library catalog — flat list, filtered by category chip + search
+                    libraryList
+
+                    // Recently installed toggle (kept separate from the main list so
+                    // categories stay visible beside it, rather than disappearing).
+                    if !model.installed.isEmpty && model.showRecentFirst {
+                        Divider()
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Image(systemName: "clock.badge.checkmark")
+                                    .font(.caption)
+                                    .foregroundStyle(.tint)
+                                Text("Recently installed")
+                                    .font(.subheadline.weight(.semibold))
+                                Spacer()
+                                Button("Show all") {
+                                    model.showRecentFirst = false
+                                }
+                                .font(.caption2)
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(.tint)
+                            }
+                            .padding(.bottom, 4)
+                            ForEach(model.recentlyInstalledPresets) { preset in
+                                libraryWidgetRow(preset)
+                            }
+                        }
+                    }
                 }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 16)
             }
 
             Divider()
@@ -668,12 +734,16 @@ struct WidgetLibraryView: View {
                     .lineLimit(1)
                 Spacer()
                 Button {
-                    model.confirmRemove(widget)
+                    if widget.visible {
+                        model.confirmRemove(widget)
+                    } else {
+                        model.confirmDisable(widget)
+                    }
                 } label: {
-                    Image(systemName: "trash")
+                    Image(systemName: widget.visible ? "trash" : "eye.slash")
                 }
                 .buttonStyle(.borderless)
-                .help("Remove \(widget.title)")
+                .help(widget.visible ? "Remove \(widget.title)" : "Enable \(widget.title)")
             }
             HStack(spacing: 12) {
                 Toggle("Behind apps", isOn: Binding(
@@ -701,34 +771,23 @@ struct WidgetLibraryView: View {
         .padding(.vertical, 4)
     }
 
-    private var librarySection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if model.groups.isEmpty {
+    /// Flat list of library presets (no section headers — filter chips handle categories).
+    private var libraryList: some View {
+        LazyVStack(alignment: .leading, spacing: 8) {
+            if model.filteredPresets.isEmpty {
                 VStack(spacing: 6) {
                     if !model.search.isEmpty || model.selectedCategory != nil {
-                        Text("Nothing matches \"\(model.search)\"")
+                        Text("No widgets match")
                             .foregroundStyle(.secondary)
                     } else {
                         Text("No bundled widgets")
                             .foregroundStyle(.secondary)
                     }
-                    Text("You can still add your own with Install Your Own…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(model.groups) { group in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(group.category.uppercased())
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            ForEach(group.presets) { preset in
-                                libraryWidgetRow(preset)
-                            }
-                        }
-                    }
+                ForEach(model.filteredPresets) { preset in
+                    libraryWidgetRow(preset)
                 }
             }
         }
@@ -753,10 +812,20 @@ struct WidgetLibraryView: View {
             }
             Spacer(minLength: 8)
             if installed {
-                Button("Installed") { }
-                    .disabled(true)
+                HStack(spacing: 6) {
+                    Button("Installed") { }
+                        .disabled(true)
+                        .controlSize(.small)
+                        .foregroundStyle(.green)
+                    Button {
+                        model.confirmRemoveInstalled(preset)
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
                     .controlSize(.small)
-                    .foregroundStyle(.green)
+                    .help("Remove \(preset.title)")
+                }
             } else {
                 Button("Add") {
                     model.confirmInstall(preset)
@@ -784,6 +853,11 @@ struct WidgetLibraryView: View {
                 ForEach(model.categories, id: \.self) { category in
                     categoryChip(category, label: category)
                 }
+                if !model.installed.isEmpty {
+                    Divider().frame(height: 18)
+                    categoryChip(model.showRecentFirst ? "Recent" : nil, label: "Recent")
+                        .opacity(model.categories.isEmpty ? 0.5 : 1)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 10)
@@ -791,9 +865,18 @@ struct WidgetLibraryView: View {
     }
 
     private func categoryChip(_ category: String?, label: String) -> some View {
-        let selected = model.selectedCategory == category
+        let selected: Bool
+        if label == "Recent" {
+            selected = model.showRecentFirst
+        } else {
+            selected = model.selectedCategory == category
+        }
         return Button {
-            model.selectedCategory = category
+            if label == "Recent" {
+                model.showRecentFirst.toggle()
+            } else {
+                model.selectedCategory = category
+            }
         } label: {
             Text(label)
                 .font(.caption)
@@ -843,12 +926,20 @@ struct WidgetLibraryView: View {
                     }
                     HStack {
                         if model.isInstalled(preset) {
-                            Text("Installed")
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(.green)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2)
-                                .background(Capsule().fill(Color.green.opacity(0.15)))
+                            HStack(spacing: 8) {
+                                Text("Installed")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.green)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(Color.green.opacity(0.15)))
+                                Button("Remove") {
+                                    model.confirmRemoveInstalled(preset)
+                                }
+                                .controlSize(.small)
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(.red)
+                            }
                         } else {
                             Button("Install") {
                                 model.doInstall(preset)

@@ -20,7 +20,11 @@ let package = Package(
             name: "WijetiApp",
             dependencies: ["WijetiCore", "WijetiMacOS"]
         ),
-        .testTarget(name: "WijetiCoreTests", dependencies: ["WijetiCore"])
+        .testTarget(name: "WijetiCoreTests", dependencies: ["WijetiCore"]),
+        .executableTarget(
+            name: "SnapGen",
+            dependencies: ["WijetiCore"]
+        ),
     ],
     swiftLanguageModes: [.v5]
 )

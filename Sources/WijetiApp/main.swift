@@ -251,6 +251,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         key == "widgets"
     }
 
+    @objc func openLibrary() {
+        library.show()
+    }
+
     // MARK: - Snapshot verification
 
     /// `--snapshot-dir` renders every widget window to a PNG: automated proof that widgets

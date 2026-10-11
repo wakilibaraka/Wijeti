@@ -6,6 +6,8 @@ public final class TrayMenuController {
     private let host: HostApp
     private var statusItem: NSStatusItem?
     private var statusMenuItem: NSMenuItem?
+    private var activeWidgetsMenuItem: NSMenuItem?
+    private var activeWidgetsSubmenu: NSMenu?
 
     public var onShowPreferences: (() -> Void)?
     public var onOpenLibrary: (() -> Void)?
@@ -40,6 +42,14 @@ public final class TrayMenuController {
         menu.addItem(status)
         statusMenuItem = status
 
+        // Active widgets submenu
+        let activeWidgets = NSMenuItem(title: "Active Widgets", action: nil, keyEquivalent: "")
+        activeWidgets.isEnabled = false
+        activeWidgetsSubmenu = NSMenu()
+        activeWidgets.submenu = activeWidgetsSubmenu
+        menu.addItem(activeWidgets)
+        refreshActiveWidgets()
+
         menu.addItem(.separator())
         let preferences = makeMenuItem("Preferences…", #selector(showPreferences))
         preferences.keyEquivalent = ","
@@ -58,10 +68,50 @@ public final class TrayMenuController {
         host.onStatus = { [weak self] message in
             self?.statusMenuItem?.title = message
         }
+        host.onStateChange = { [weak self] _ in
+            self?.refreshActiveWidgets()
+        }
     }
 
     public func refreshStatus() {
         statusMenuItem?.title = host.port.map { "Running on port \($0)" } ?? "Server not running"
+        refreshActiveWidgets()
+    }
+
+    private func refreshActiveWidgets() {
+        guard let submenu = activeWidgetsSubmenu else { return }
+        // Remove old widget items (keep the title item)
+        let itemsToRemove = submenu.items.filter { $0.action == #selector(toggleWidget(_:)) }
+        for item in itemsToRemove {
+            submenu.removeItem(item)
+        }
+
+        let visibleWidgets = host.widgetIDs.filter { id in
+            let settings = host.settings(for: id)
+            return !settings.hidden
+        }
+
+        if visibleWidgets.isEmpty {
+            let empty = NSMenuItem(title: "No active widgets", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            submenu.addItem(empty)
+        } else {
+            for id in visibleWidgets {
+                let item = NSMenuItem(title: id, action: #selector(toggleWidget(_:)), keyEquivalent: "")
+                item.target = self
+                item.state = .on
+                submenu.addItem(item)
+            }
+        }
+    }
+
+    @objc private func toggleWidget(_ sender: NSMenuItem) {
+        // Toggle visibility of the widget whose id matches the menu item title
+        let widgetID = sender.title
+        let currentSettings = host.settings(for: widgetID)
+        host.updateSettings(widgetID) { $0.hidden = !currentSettings.hidden }
+        // Flip the menu item state
+        sender.state = sender.state == .on ? .off : .on
     }
 
     @objc private func refreshAll() { host.refreshWidgets() }
