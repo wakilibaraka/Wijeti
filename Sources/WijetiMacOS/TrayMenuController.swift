@@ -51,6 +51,12 @@ public final class TrayMenuController {
         refreshActiveWidgets()
 
         menu.addItem(.separator())
+        // Deliberately no key equivalents: the status menu is only open after a click, so
+        // they would fire nowhere useful, and Cmd-A / Cmd-H belong to Select All and Hide.
+        // The real shortcuts live in the app's main menu.
+        menu.addItem(makeMenuItem("Show All Widgets", #selector(showAllWidgets)))
+        menu.addItem(makeMenuItem("Hide All Widgets", #selector(hideAllWidgets)))
+        menu.addItem(.separator())
         let preferences = makeMenuItem("Preferences…", #selector(showPreferences))
         preferences.keyEquivalent = ","
         menu.addItem(preferences)
@@ -68,9 +74,11 @@ public final class TrayMenuController {
         host.onStatus = { [weak self] message in
             self?.statusMenuItem?.title = message
         }
-        host.onStateChange = { [weak self] _ in
-            self?.refreshActiveWidgets()
-        }
+        // `host.onStateChange` is deliberately NOT set here. It is a single callback, so
+        // claiming it from the menu would silently displace whoever set it first — which is
+        // the app delegate, whose handler owns the first-state behaviour (opening a window
+        // once widgets are known) and the `--snapshot-dir` proof. The delegate calls
+        // `refreshStatus()` from its own handler instead, so both run.
     }
 
     public func refreshStatus() {
@@ -120,6 +128,15 @@ public final class TrayMenuController {
     @objc private func openLibrary() { onOpenLibrary?() }
     @objc private func visitGallery() { host.visitGallery() }
     @objc private func showPreferences() { onShowPreferences?() }
+    @objc private func showAllWidgets() {
+        // No confirmation — this is an explicit power action the user invoked.
+        host.enableAllVisibleNow()
+        onOpenLibrary?()
+    }
+    @objc private func hideAllWidgets() {
+        host.disableAllNow()
+        onOpenLibrary?()
+    }
     @objc private func quit() { onQuit?() }
 
     private func makeMenuItem(_ title: String, _ action: Selector) -> NSMenuItem {

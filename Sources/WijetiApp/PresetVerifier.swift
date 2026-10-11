@@ -114,23 +114,23 @@ final class PresetVerifier {
 
     // MARK: - Artifacts
 
-    private func snapshotPreview(named id: String) {
-        library.snapshotPreview { [weak self] image in
-            guard let self, let image else { return }
-            _ = self.writePNG(image, to: self.outputDirectory.appendingPathComponent(self.safeName(id) + ".png"))
-        }
+    private func snapshotPreview(named id: String) {            library.snapshotPreview { [weak self] image in
+                guard let self, let image else { return }
+                WindowSnapshot.writePNG(
+                    image,
+                    to: self.outputDirectory.appendingPathComponent(self.safeName(id) + ".png")
+                )
+            }
     }
 
     private func snapshotLibraryWindow(completion: @escaping () -> Void) {
-        library.snapshotWindow { [weak self] image in
-            if let self, let image {
-                _ = self.writePNG(
-                    image,
-                    to: self.outputDirectory.appendingPathComponent("library-window.png")
-                )
-            }
-            completion()
+        if let image = library.snapshotWindowImage() {
+            WindowSnapshot.writePNG(
+                image,
+                to: outputDirectory.appendingPathComponent("library-window.png")
+            )
         }
+        completion()
     }
 
     private func finish(completion: @escaping (_ allPassed: Bool) -> Void) {
@@ -154,20 +154,4 @@ final class PresetVerifier {
             .replacingOccurrences(of: ".", with: "-")
     }
 
-    private func writePNG(_ image: NSImage, to url: URL) -> Bool {
-        guard let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: .png, properties: [:])
-        else {
-            return false
-        }
-        do {
-            try png.write(to: url)
-            NSLog("wrote %@", url.lastPathComponent)
-            return true
-        } catch {
-            NSLog("png write failed: %@", error.localizedDescription)
-            return false
-        }
-    }
 }

@@ -26,15 +26,31 @@ public final class WidgetLibraryWindow: NSWindowController {
         let window = NSWindow(contentViewController: hosting)
         window.title = "Widget Library"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        // Chrome: the sidebar's material runs to the top edge, so the title bar is only a
+        // drag surface and the sidebar toggle.
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.toolbarStyle = .unified
+        // The sidebar samples the desktop through the window, so the window itself must not
+        // be opaque. The content and detail panes paint their own background, so the sidebar
+        // is the only translucent surface.
+        window.isOpaque = false
+        window.backgroundColor = .clear
         window.isReleasedWhenClosed = false
         super.init(window: window)
         window.center()
         window.setContentSize(NSSize(width: 1180, height: 660))
     }
 
-    /// First show: seed a selection so the preview pane is never dead space.
+    /// Loads the model before the window is on screen, then seeds a selection so the preview
+    /// pane is never dead space.
+    ///
+    /// `WidgetLibraryModel.init` deliberately does not touch the disk, so without this the
+    /// window opens with an empty catalog and an empty installed list — it only filled in
+    /// after the user happened to trigger an action that called `reload()`.
     @MainActor
     public override func showWindow(_ sender: Any?) {
+        model.reload()
         super.showWindow(sender)
         guard !didShowWindow else { return }
         didShowWindow = true
@@ -153,21 +169,19 @@ public final class WidgetLibraryWindow: NSWindowController {
     /// Renders the whole library window (including the preview pane) to an image.
     @MainActor
     public func snapshotWindow(completion: @escaping (NSImage?) -> Void) {
-        guard let view = window?.contentView else {
-            completion(nil)
-            return
-        }
-        let bounds = view.bounds
-        guard bounds.width > 0, bounds.height > 0,
-              let rep = view.bitmapImageRepForCachingDisplay(in: bounds)
-        else {
-            completion(nil)
-            return
-        }
-        view.cacheDisplay(in: bounds, to: rep)
-        let image = NSImage(size: bounds.size)
-        image.addRepresentation(rep)
-        completion(image)
+        completion(snapshotWindowImage())
+    }
+
+    /// The same render, returned directly — used by `--capture-ui`.
+    @MainActor
+    public func snapshotWindowImage() -> NSImage? {
+        WindowSnapshot.capture(window)
+    }
+
+    /// Chrome check for `--capture-ui` — logged, not eyeballed.
+    @MainActor
+    public var chromeSummary: String {
+        WindowSnapshot.chromeSummary(of: window)
     }
 }
 
@@ -268,8 +282,19 @@ public final class WidgetLibraryModel: ObservableObject {
         return WidgetImporter.widgetID(for: entry, root: presetsDirectory)
     }
 
+    /// Re-reads the bundled catalog and everything that derives from the server's state.
+    /// Reserved for the points where the catalog itself can have changed.
     public func reload() {
         catalog = PresetCatalog.load(from: presetsDirectory)
+        refreshInstalledFromHost()
+    }
+
+    /// Rebuilds only the parts that come from the running server rather than from disk.
+    ///
+    /// Cheap enough to run on every state poll — `reload()` also re-reads `Catalog.json` and
+    /// stats every preset file, so it is the wrong thing to call from a 1 Hz timer. Nothing
+    /// here touches the user's filters or selection, so it never disturbs what is on screen.
+    public func refreshInstalledFromHost() {
         // installed widgets come from the running server's state
         installed = host.widgetIDs.compactMap { id in
             guard host.widgetDirectoryURL.appendingPathComponent(id).path != "/" else { return nil }
@@ -521,6 +546,35 @@ public final class WidgetLibraryModel: ObservableObject {
         reload()
     }
 
+    /// How many installed widgets are currently visible — drives the section badge.
+    public var visibleCount: Int {
+        installed.filter(\.visible).count
+    }
+
+    /// Makes every installed widget visible now. A thin wrapper over `HostApp` so the menu
+    /// bar, the library and AppleScript all share one implementation of the loop.
+    public func enableAllVisibleNow() {
+        host.enableAllVisibleNow()
+        reload()
+    }
+
+    /// Hides every installed widget now.
+    public func disableAllNow() {
+        host.disableAllNow()
+        reload()
+    }
+
+    /// Flips every installed widget: if anything is visible, hide them all; otherwise show
+    /// them all. "Show everything" is the only useful meaning of a toggle from all-hidden.
+    public func toggleAllNow() {
+        if installed.contains(where: \.visible) {
+            host.disableAllNow()
+        } else {
+            host.enableAllVisibleNow()
+        }
+        reload()
+    }
+
     public func setOnAllScreens(_ value: Bool, for id: String) {
         host.updateSettings(id) { $0.showOnAllScreens = value }
         reload()
@@ -584,33 +638,220 @@ public final class WidgetLibraryModel: ObservableObject {
 struct WidgetLibraryView: View {
     @ObservedObject var model: WidgetLibraryModel
 
+    /// Which source the content pane is showing. A real type rather than two loose booleans,
+    /// so the source list can select exactly one of them.
+    private enum SidebarItem: Hashable {
+        case all
+        case recent
+        case category(String)
+    }
+
     var body: some View {
-        HSplitView {
-            libraryPane
-                .frame(minWidth: 340, idealWidth: 380)
+        NavigationSplitView {
+            sidebar
+                .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 300)
+        } content: {
+            contentPane
+                .navigationSplitViewColumnWidth(min: 320, ideal: 400)
+        } detail: {
             previewPane
-                .frame(minWidth: 540, idealWidth: 720)
+                .navigationSplitViewColumnWidth(min: 420, ideal: 620)
         }
+        .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 1040, minHeight: 560)
+        .toolbar {
+            // Bulk visibility belongs in the toolbar, not in the list: it is a window-wide
+            // action on the installed set rather than something about the selected widget.
+            ToolbarItemGroup(placement: .primaryAction) {
+                Text(model.status.isEmpty ? "\(model.visibleCount) of \(model.installed.count) visible" : model.status)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Button("Show All") { model.enableAllVisibleNow() }
+                    .help("Make every installed widget visible")
+                    .disabled(model.installed.isEmpty)
+                Button("Hide All") { model.disableAllNow() }
+                    .help("Hide every installed widget — they stay installed")
+                    .disabled(model.installed.isEmpty)
+            }
+        }
         .onDrop(of: [.fileURL], isTargeted: $model.isDropTargeted) { providers in
             handleDrop(providers)
         }
     }
 
-    // MARK: - Library pane (merged: installed widgets + library catalog)
+    // MARK: - Source list
 
-    private var libraryPane: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header: title + Install Your Own button
-            HStack {
+    /// The sidebar: installed widgets first, because that is the state the user is actually
+    /// managing, then the catalog's categories. This replaces the old horizontal filter-chip
+    /// row — one control decides what the content pane shows instead of two that could
+    /// disagree.
+    private var sidebar: some View {
+        List(selection: sidebarSelection) {
+            if !model.installed.isEmpty {
+                Section {
+                    ForEach(model.installed) { widget in
+                        sidebarInstalledRow(widget)
+                    }
+                } header: {
+                    Text("Your widgets")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+            }
+
+            Section {
+                Label("All widgets", systemImage: "square.grid.2x2")
+                    .font(.system(size: 13))
+                    .tag(SidebarItem.all)
+                if !model.installed.isEmpty {
+                    Label("Recently installed", systemImage: "clock.badge.checkmark")
+                        .font(.system(size: 13))
+                        .tag(SidebarItem.recent)
+                }
+                ForEach(model.categories, id: \.self) { category in
+                    Label(category, systemImage: Self.symbol(forCategory: category))
+                        .font(.system(size: 13))
+                        .tag(SidebarItem.category(category))
+                }
+            } header: {
                 Text("Library")
-                    .font(.headline)
+                    .font(.system(size: 11, weight: .semibold))
+            }
+        }
+        .listStyle(.sidebar)
+        // The list paints its own opaque background by default, which would hide the
+        // material underneath it.
+        .scrollContentBackground(.hidden)
+        .background(VisualEffectView(material: .sidebar))
+    }
+
+    /// Reads and writes the model's existing filter state, so the sidebar, the model and the
+    /// content pane can never disagree about what is selected.
+    private var sidebarSelection: Binding<SidebarItem?> {
+        Binding(
+            get: {
+                if model.showRecentFirst { return .recent }
+                if let category = model.selectedCategory { return .category(category) }
+                return .all
+            },
+            set: { item in
+                switch item {
+                case .category(let category):
+                    model.selectedCategory = category
+                    model.showRecentFirst = false
+                case .recent:
+                    model.selectedCategory = nil
+                    model.showRecentFirst = true
+                case .all, .none:
+                    model.selectedCategory = nil
+                    model.showRecentFirst = false
+                }
+            }
+        )
+    }
+
+    /// One installed widget in the source list. Narrow by design — the visibility toggle and
+    /// a one-line summary. The remaining per-widget settings are on the context menu here and
+    /// in Preferences, so nothing is lost by keeping the row small.
+    private func sidebarInstalledRow(_ widget: WidgetLibraryModel.Installed) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: widget.visible ? "circle.fill" : "circle.dashed")
+                .font(.system(size: 8))
+                .foregroundStyle(widget.visible ? Color.green : Color.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(widget.title)
+                    .font(.system(size: 13))
+                    .lineLimit(1)
+                // A visible widget needs no second line — the column is narrow and the layer
+                // summary would just repeat down the whole list. A hidden one does, because
+                // "still installed but not showing" is the surprising state.
+                if !widget.visible {
+                    Text("Hidden — still installed")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 4)
+            Button {
+                model.setVisible(!widget.visible, for: widget.id)
+            } label: {
+                Image(systemName: widget.visible ? "eye" : "eye.slash")
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.mini)
+            .help(widget.visible
+                ? "Hide \(widget.title) — it stays installed"
+                : "Show \(widget.title) on the desktop again")
+        }
+        .padding(.vertical, 1)
+        .contentShape(Rectangle())
+        .onTapGesture { previewIfBundled(widget) }
+        .contextMenu {
+            Button(widget.visible ? "Hide" : "Show") {
+                model.setVisible(!widget.visible, for: widget.id)
+            }
+            Toggle("Behind other apps", isOn: Binding(
+                get: { widget.inBackground },
+                set: { model.setInBackground($0, for: widget.id) }
+            ))
+            Toggle("On every screen", isOn: Binding(
+                get: { widget.onAllScreens },
+                set: { model.setOnAllScreens($0, for: widget.id) }
+            ))
+            Divider()
+            Button("Remove \(widget.title)…", role: .destructive) {
+                model.confirmRemove(widget)
+            }
+        }
+    }
+
+    /// Loads an installed widget into the preview pane when the bundled catalog knows it.
+    /// A hand-made widget has no preview source, so say so rather than doing nothing.
+    private func previewIfBundled(_ widget: WidgetLibraryModel.Installed) {
+        if let preset = model.catalog.presets.first(where: { $0.id == widget.id }) {
+            model.select(preset)
+        } else {
+            model.status = "\(widget.title) is not part of the bundled library — only bundled widgets have a live preview."
+        }
+    }
+
+    /// A category is free-form text from the catalog, so unknown ones fall back to the
+    /// generic grid glyph rather than an empty label.
+    private static func symbol(forCategory category: String) -> String {
+        switch category {
+        case "Calendar": return "calendar"
+        case "Clock": return "clock"
+        case "Finance": return "chart.line.uptrend.xyaxis"
+        case "Fun": return "party.popper"
+        case "Lyrics": return "music.mic"
+        case "Music": return "music.note"
+        case "Productivity": return "checklist"
+        case "Quotes": return "quote.bubble"
+        case "System": return "gauge.medium"
+        case "Weather": return "cloud.sun"
+        default: return "square.grid.2x2"
+        }
+    }
+
+    // MARK: - Content pane (the library catalog)
+
+    private var contentPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header: whatever the source list has selected, plus install-your-own.
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(contentTitle)
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(contentSubtitle)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button("Install Your Own…") { model.chooseFilesToImport() }
                     .controlSize(.small)
             }
             .padding(.horizontal, 16)
-            .padding(.top, 16)
+            .padding(.top, 14)
             .padding(.bottom, 8)
 
             // Search bar
@@ -637,43 +878,29 @@ struct WidgetLibraryView: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 10)
 
-            // Category filter pills
-            categoryFilter
-
-            // Content: installed widgets + library catalog (always in a ScrollView)
+            // Content: the catalog, filtered by whatever the source list selected. The
+            // installed list lives in the sidebar, so nothing is listed twice.
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    // Installed widgets section
-                    if !model.installed.isEmpty {
-                        installedSection
-                    }
-                    // Library catalog — flat list, filtered by category chip + search
-                    libraryList
-
-                    // Recently installed toggle (kept separate from the main list so
-                    // categories stay visible beside it, rather than disappearing).
-                    if !model.installed.isEmpty && model.showRecentFirst {
-                        Divider()
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Image(systemName: "clock.badge.checkmark")
-                                    .font(.caption)
-                                    .foregroundStyle(.tint)
-                                Text("Recently installed")
-                                    .font(.subheadline.weight(.semibold))
-                                Spacer()
-                                Button("Show all") {
-                                    model.showRecentFirst = false
-                                }
-                                .font(.caption2)
-                                .buttonStyle(.borderless)
-                                .foregroundStyle(.tint)
+                    if model.showRecentFirst {
+                        HStack {
+                            Text("Recently installed")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Show everything") {
+                                model.selectedCategory = nil
+                                model.showRecentFirst = false
                             }
-                            .padding(.bottom, 4)
-                            ForEach(model.recentlyInstalledPresets) { preset in
-                                libraryWidgetRow(preset)
-                            }
+                            .font(.caption2)
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.tint)
                         }
+                        ForEach(model.recentlyInstalledPresets) { preset in
+                            libraryWidgetRow(preset)
+                        }
+                    } else {
+                        libraryList
                     }
                 }
                 .padding(.horizontal, 16)
@@ -697,113 +924,28 @@ struct WidgetLibraryView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
         }
+        // The window is transparent so the sidebar can sample the desktop, so the content
+        // pane has to paint its own background.
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private var installedSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.green)
-                Text("Your widgets")
-                    .font(.subheadline.weight(.semibold))
-                Text("\(model.installed.count)")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 1)
-                    .background(Capsule().fill(Color(nsColor: .controlBackgroundColor)))
-                Spacer()
-            }
-            .padding(.bottom, 6)
-
-            ForEach(model.installed) { widget in
-                installedWidgetRow(widget)
-                if widget.id != model.installed.last?.id {
-                    Divider().padding(.leading, 12)
-                }
-            }
-        }
+    /// What the source list has selected, as a title for the content pane header.
+    private var contentTitle: String {
+        if model.showRecentFirst { return "Recently installed" }
+        return model.selectedCategory ?? "All widgets"
     }
 
-    private func installedWidgetRow(_ widget: WidgetLibraryModel.Installed) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Toggle("", isOn: Binding(
-                    get: { widget.visible },
-                    set: { model.setVisible($0, for: widget.id) }
-                ))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(widget.title)
-                        .font(.callout.weight(.medium))
-                        .lineLimit(1)
-                    Text(widget.visible ? "Visible" : "Hidden — still installed")
-                        .font(.caption2)
-                        .foregroundStyle(widget.visible ? Color.secondary : Color.orange)
-                }
-
-                Spacer()
-
-                // Distinct actions: a disabled (hidden) widget gets "Enable"; a visible
-                // one gets Remove (delete) via a separate, red affordance.
-                if !widget.visible {
-                    Button {
-                        model.setVisible(true, for: widget.id)
-                    } label: {
-                        Label("Enable", systemImage: "eye")
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .controlSize(.small)
-                    .help("Show \(widget.title) on the desktop again")
-                }
-
-                Button {
-                    if widget.visible {
-                        model.confirmRemove(widget)
-                    }
-                } label: {
-                    Image(systemName: "trash")
-                        .foregroundStyle(widget.visible ? Color.red : Color(nsColor: .tertiaryLabelColor))
-                }
-                .buttonStyle(.borderless)
-                .disabled(!widget.visible)
-                .help(widget.visible
-                    ? "Remove \(widget.title) from disk (cannot be undone)"
-                    : "Enable the widget before removing it")
-            }
-            HStack(spacing: 12) {
-                Toggle("Behind apps", isOn: Binding(
-                    get: { widget.inBackground },
-                    set: { model.setInBackground($0, for: widget.id) }
-                ))
-                .toggleStyle(.checkbox)
-                Toggle("All screens", isOn: Binding(
-                    get: { widget.onAllScreens },
-                    set: { model.setOnAllScreens($0, for: widget.id) }
-                ))
-                .toggleStyle(.checkbox)
-                Spacer()
-                Button("Preview") {
-                    if let preset = model.catalog.presets.first(where: { $0.id == widget.id }) {
-                        model.select(preset)
-                    } else {
-                        model.status = "\(widget.title) is not part of the bundled library — only bundled widgets have a live preview."
-                    }
-                }
-                .font(.caption2)
-                .controlSize(.small)
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 5)
+    private var contentSubtitle: String {
+        let count = model.showRecentFirst
+            ? model.recentlyInstalledPresets.count
+            : model.filteredPresets.count
+        return count == 1 ? "1 widget" : "\(count) widgets"
     }
 
-    /// Flat list of library presets (no section headers — filter chips handle categories).
+    // MARK: - Catalog list
+
+    /// Flat list of library presets — the source list picks the category, so there are no
+    /// section headers here.
     private var libraryList: some View {
         LazyVStack(alignment: .leading, spacing: 8) {
             if model.filteredPresets.isEmpty {
@@ -837,6 +979,7 @@ struct WidgetLibraryView: View {
                 Button("Clear filters") {
                     model.search = ""
                     model.selectedCategory = nil
+                    model.showRecentFirst = false
                 }
                 .controlSize(.small)
                 .buttonStyle(.borderless)
@@ -897,51 +1040,6 @@ struct WidgetLibraryView: View {
         .contentShape(Rectangle())
         .onTapGesture { model.select(preset) }
         .help("Preview \(preset.title)")
-    }
-
-    // MARK: - Category filter
-
-    private var categoryFilter: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                categoryChip(nil, label: "All")
-                ForEach(model.categories, id: \.self) { category in
-                    categoryChip(category, label: category)
-                }
-                if !model.installed.isEmpty {
-                    Divider().frame(height: 18)
-                    categoryChip(model.showRecentFirst ? "Recent" : nil, label: "Recent")
-                        .opacity(model.categories.isEmpty ? 0.5 : 1)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 10)
-        }
-    }
-
-    private func categoryChip(_ category: String?, label: String) -> some View {
-        let selected: Bool
-        if label == "Recent" {
-            selected = model.showRecentFirst
-        } else {
-            selected = model.selectedCategory == category
-        }
-        return Button {
-            if label == "Recent" {
-                model.showRecentFirst.toggle()
-            } else {
-                model.selectedCategory = category
-            }
-        } label: {
-            Text(label)
-                .font(.caption)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .background(
-                    Capsule().fill(selected ? Color.accentColor.opacity(0.22) : Color(nsColor: .controlBackgroundColor))
-                )
-        }
-        .buttonStyle(.plain)
     }
 
     // MARK: - Preview pane (wide)
@@ -1104,6 +1202,8 @@ struct WidgetLibraryView: View {
 
             Divider()
         }
+        // Same reasoning as the content pane: the window is clear, so this pane backs itself.
+        .background(Color(nsColor: .windowBackgroundColor))
         .alert(isPresented: $model.showPopup) {
             Alert(
                 title: Text(model.popupTitle),

@@ -37,6 +37,7 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
             window.isReleasedWhenClosed = false
             window.delegate = self
             window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
             window.isOpaque = false
             window.backgroundColor = .clear
             self.window = window

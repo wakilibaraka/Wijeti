@@ -191,6 +191,45 @@ public final class HostApp {
         updateSettings(widgetID) { $0.hidden = hidden }
     }
 
+    // MARK: - Bulk visibility
+
+    /// The widgets that are currently visible (i.e. not hidden).
+    public var visibleWidgetIDs: [String] {
+        widgetIDs.filter { !settings(for: $0).hidden }
+    }
+
+    /// Makes every widget visible now.
+    ///
+    /// Both bulk actions live here, not in the windows that offer them, so the menu bar,
+    /// the library and AppleScript all run the same loop. Each change goes over the socket
+    /// as its own `WIDGET_SETTINGS_CHANGED`, and `updateSettings` mirrors it into
+    /// `state.settings` as it goes — which is what lets the loop read a consistent `hidden`
+    /// value on every iteration.
+    public func enableAllVisibleNow() {
+        let targets = widgetIDs.filter { settings(for: $0).hidden }
+        guard !targets.isEmpty else {
+            onStatus?("All widgets are already visible")
+            return
+        }
+        for id in targets {
+            setHidden(false, for: id)
+        }
+        onStatus?("Showing \(targets.count) widget(s)")
+    }
+
+    /// Hides every visible widget now.
+    public func disableAllNow() {
+        let targets = visibleWidgetIDs
+        guard !targets.isEmpty else {
+            onStatus?("No visible widgets to hide")
+            return
+        }
+        for id in targets {
+            setHidden(true, for: id)
+        }
+        onStatus?("Hid \(targets.count) widget(s)")
+    }
+
     public func installPresets() {
         do {
             let result = try PresetInstaller.install(

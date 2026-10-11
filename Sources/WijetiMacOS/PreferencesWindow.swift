@@ -483,8 +483,22 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate {
             let hosting = NSHostingController(rootView: view)
             let window = NSWindow(contentViewController: hosting)
             window.title = "Wijeti Preferences"
-            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            // Modeless, and deliberately without minimize or zoom: settings are a panel you
+            // glance at and leave open beside your widgets, so `.titled` + `.closable` leaves
+            // exactly one live control in the traffic lights — close. Every change applies
+            // on the spot (see `PreferencesModel`), so there is no Save/Cancel pair either.
+            window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
+            // Let the material and the canvas run to the top edge instead of stopping at a
+            // separate chrome bar.
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.isMovableByWindowBackground = true
+            // A style mask without `.miniaturizable` is not enough on its own: AppKit still
+            // constructs the buttons and can leave them clickable. Hide them outright so the
+            // red close button is genuinely the only live control.
+            window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+            window.standardWindowButton(.zoomButton)?.isHidden = true
             window.delegate = self
             self.window = window
         }
@@ -493,6 +507,19 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
         NSLog("preferences window shown with %d widget(s)", model.rows.count)
+    }
+
+    /// Renders the settings window to an image — `--capture-ui` uses this to prove the
+    /// chrome rules (modeless, close-only) actually took effect on the real window.
+    @MainActor
+    public func snapshotWindowImage() -> NSImage? {
+        WindowSnapshot.capture(window)
+    }
+
+    /// Chrome check for `--capture-ui` — logged, not eyeballed.
+    @MainActor
+    public var chromeSummary: String {
+        WindowSnapshot.chromeSummary(of: window)
     }
 
     /// Set by the app delegate so "Add Widgets" can open the library window.

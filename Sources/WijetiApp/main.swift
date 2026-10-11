@@ -19,6 +19,8 @@ struct Options {
     var verifyPresetsDirectory: URL?
     /// `--preview-preset <id>`: preselect a preset when the library opens.
     var previewPresetID: String?
+    /// `--capture-ui <dir>`: render the library and settings windows to PNGs, then exit.
+    var captureUIDirectory: URL?
 
     init(arguments: [String]) {
         var index = 0
@@ -57,6 +59,9 @@ struct Options {
             case "--preview-preset" where value != nil:
                 previewPresetID = value!
                 consumedValue = true
+            case "--capture-ui" where value != nil:
+                captureUIDirectory = URL(fileURLWithPath: value!)
+                consumedValue = true
             case "--exit-after-snapshot":
                 exitAfterSnapshot = true
             case "--install-presets":
@@ -90,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var onboarding: OnboardingWindowController
     private var presetVerifier: PresetVerifier?
     private var verifyStarted = false
+    private var uiCaptureStarted = false
 
     init(options: Options) {
         self.options = options
@@ -141,6 +147,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         host.onStateChange = { [weak self] (fetched: WidgetStateResponse) in
             guard let self else { return }
             self.appliedState = true
+            // The tray used to claim `onStateChange` for itself, which displaced this handler
+            // entirely. Keeping the menu in sync is now this handler's job.
+            self.tray.refreshStatus()
+            // The library's contents come from the server, whose first state can land after
+            // the window was already opened. Refresh it only while it is actually on screen.
+            if self.library.window?.isVisible == true {
+                self.library.model.refreshInstalledFromHost()
+            }
             // The window can only be populated once the server has scanned its widget
             // directory — the first poll can land before that, so wait for a state that
             // actually carries widgets.
@@ -171,13 +185,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        installMainMenu()
         tray.install()
         NSLog("Wijeti starting; widgets: %@", host.widgetDirectoryURL.path)
+        NSLog(
+            "options: snapshotDir=%@ exitAfterSnapshot=%@ captureUI=%@",
+            options.snapshotDirectory?.path ?? "-",
+            options.exitAfterSnapshot ? "yes" : "no",
+            options.captureUIDirectory?.path ?? "-"
+        )
         host.start()
 
         // First-launch onboarding, before anything else. It is the intro surface, so it
         // should be the first thing the user sees, and it clears itself on dismiss.
         onboarding.show()
+
+        // `--capture-ui` is a one-shot dev flag: show both windows, draw them to PNGs, exit.
+        // It takes precedence over `--show-library`, which it implies.
+        if options.captureUIDirectory != nil {
+            runUICapture()
+            return
+        }
 
         pendingLibrary = options.showLibrary
         pendingPreferences = options.showPreferences
@@ -255,6 +283,147 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         library.show()
     }
 
+    // MARK: - Main menu
+
+    /// A minimal main menu.
+    ///
+    /// Wijeti is an accessory app (`LSUIElement`) and has never had a menu bar, so the key
+    /// equivalents on the status-bar menu did nothing until the user opened that menu. AppKit
+    /// routes key equivalents through `NSApp.mainMenu` whether or not the bar is drawn, so
+    /// installing one is what makes `Cmd-R` reload widgets from any window.
+    private func installMainMenu() {
+        let appMenu = NSMenu()
+        appMenu.addItem(
+            withTitle: "Settings…",
+            action: #selector(showPreferences(_:)),
+            keyEquivalent: ","
+        )
+        appMenu.addItem(.separator())
+        appMenu.addItem(
+            withTitle: "Close Window",
+            action: #selector(closeKeyWindow(_:)),
+            keyEquivalent: "w"
+        )
+        appMenu.addItem(.separator())
+        appMenu.addItem(
+            withTitle: "Quit Wijeti",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+        let appItem = NSMenuItem()
+        appItem.submenu = appMenu
+
+        let widgetsMenu = NSMenu(title: "Widgets")
+        widgetsMenu.addItem(
+            withTitle: "Widget Library",
+            action: #selector(showLibrary(_:)),
+            keyEquivalent: "l"
+        )
+        widgetsMenu.addItem(.separator())
+        addMenuItem(
+            to: widgetsMenu,
+            title: "Refresh All Widgets",
+            action: #selector(refreshAllWidgets(_:)),
+            key: "r",
+            modifiers: [.command, .shift]
+        )
+        addMenuItem(
+            to: widgetsMenu,
+            title: "Reload Widgets",
+            action: #selector(reloadAllWidgets(_:)),
+            key: "r",
+            modifiers: [.command]
+        )
+        widgetsMenu.addItem(.separator())
+        // Shift-modified on purpose: plain Cmd-A is Select All and Cmd-H is Hide App, and the
+        // menu bar is not visible in an accessory app to explain why they stopped working.
+        addMenuItem(
+            to: widgetsMenu,
+            title: "Show All Widgets",
+            action: #selector(showAllWidgets(_:)),
+            key: "a",
+            modifiers: [.command, .shift]
+        )
+        addMenuItem(
+            to: widgetsMenu,
+            title: "Hide All Widgets",
+            action: #selector(hideAllWidgets(_:)),
+            key: "h",
+            modifiers: [.command, .shift]
+        )
+        let widgetsItem = NSMenuItem()
+        widgetsItem.submenu = widgetsMenu
+
+        let main = NSMenu()
+        main.addItem(appItem)
+        main.addItem(widgetsItem)
+        NSApp.mainMenu = main
+        NSLog(
+            "main menu installed: %@",
+            main.items.map(\.title).filter { !$0.isEmpty }.joined(separator: ", ")
+        )
+    }
+
+    private func addMenuItem(
+        to menu: NSMenu,
+        title: String,
+        action: Selector,
+        key: String,
+        modifiers: NSEvent.ModifierFlags
+    ) {
+        let item = menu.addItem(withTitle: title, action: action, keyEquivalent: key)
+        item.keyEquivalentModifierMask = modifiers
+    }
+
+    // Menu item targets stay `nil` so AppKit resolves them through the responder chain, which
+    // ends here at the app delegate — the same route the status menu already relies on.
+    @objc private func showPreferences(_ sender: Any?) { preferences.show() }
+    @objc private func showLibrary(_ sender: Any?) { library.show() }
+    @objc private func closeKeyWindow(_ sender: Any?) { NSApp.keyWindow?.performClose(nil) }
+    @objc private func refreshAllWidgets(_ sender: Any?) { host.refreshWidgets() }
+    @objc private func reloadAllWidgets(_ sender: Any?) { host.reloadWidgets() }
+    @objc private func showAllWidgets(_ sender: Any?) { host.enableAllVisibleNow() }
+    @objc private func hideAllWidgets(_ sender: Any?) { host.disableAllNow() }
+
+    // MARK: - UI capture (`--capture-ui`)
+
+    /// Shows the library and settings windows, renders both to PNGs, then quits. `cacheDisplay`
+    /// reads the view hierarchy rather than the display, so this needs no Screen Recording
+    /// grant — unlike `screencapture`.
+    private func runUICapture() {
+        guard let directory = options.captureUIDirectory, !uiCaptureStarted else { return }
+        uiCaptureStarted = true
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        library.show()
+        preferences.show()
+        NSLog("ui capture: windows shown, drawing in 3s")
+        // Let the split view settle and the preview server come up before drawing.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self else { return }
+            NSLog("ui capture: library chrome — %@", self.library.chromeSummary)
+            NSLog("ui capture: settings chrome — %@", self.preferences.chromeSummary)
+            let captures: [(name: String, image: NSImage?)] = [
+                ("library-window.png", self.library.snapshotWindowImage()),
+                ("preferences-window.png", self.preferences.snapshotWindowImage()),
+            ]
+            var written = 0
+            for capture in captures {
+                guard let image = capture.image else {
+                    NSLog("ui capture: nothing to draw for %@", capture.name)
+                    continue
+                }
+                if WindowSnapshot.writePNG(
+                    image,
+                    to: directory.appendingPathComponent(capture.name)
+                ) {
+                    written += 1
+                }
+            }
+            NSLog("ui capture: wrote %d of %d", written, captures.count)
+            NSApp.terminate(nil)
+        }
+    }
+
     // MARK: - Snapshot verification
 
     /// `--snapshot-dir` renders every widget window to a PNG: automated proof that widgets
@@ -262,6 +431,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func scheduleSnapshotIfNeeded() {
         guard let directory = options.snapshotDirectory, !snapshotStarted, appliedState else { return }
         snapshotStarted = true
+        NSLog("snapshot: scheduled in 5s — %@", directory.path)
         let work = DispatchWorkItem { [weak self] in self?.writeSnapshots(to: directory) }
         snapshotWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
@@ -276,6 +446,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        NSLog("snapshot: rendering %d widget window(s)", windows.count)
         let group = DispatchGroup()
         var written = 0
         for window in windows {
