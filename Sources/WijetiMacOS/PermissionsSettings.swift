@@ -1,205 +1,8 @@
 import AppKit
 import CoreLocation
 import Foundation
-import ApplicationServices
 import SwiftUI
-import UserNotifications
 import WijetiCore
-
-/// A permission Wijeti may need, and how to obtain it.
-///
-/// Widgets ask for all sorts of access — location for weather, the network for APIs,
-/// Automation to drive other apps, Full Disk Access to read files a widget wants. The
-/// app cannot grant any of these itself: macOS only ever prompts, and several (Location,
-/// Full Disk Access) must be granted by hand in System Settings. What Wijeti can do is
-/// ask in the right order, check the current status honestly, and open the exact pane
-/// the user needs to visit.
-public struct Permission: Identifiable, Equatable, Sendable {
-    public enum Kind: String, Sendable {
-        case location, notifications, accessibility, fullDisk, automation, screenRecording, appleEvents
-
-        public var title: String {
-            switch self {
-            case .location: return "Location"
-            case .fullDisk: return "Full Disk Access"
-            case .automation: return "Automation"
-            case .notifications: return "Notifications"
-            case .screenRecording: return "Screen Recording"
-            case .accessibility: return "Accessibility"
-            case .appleEvents: return "Scripting (Apple Events)"
-            }
-        }
-
-        /// Why a widget on the desktop might need this.
-        public var reason: String {
-            switch self {
-            case .location:
-                return "Weather widgets and anything that reports where you are."
-            case .fullDisk:
-                return "Widgets that read files outside your home folder, such as music or photo libraries."
-            case .automation:
-                return "Widgets that control other apps, such as toggling a music player."
-            case .notifications:
-                return "Background refreshes and alerts from widgets."
-            case .accessibility:
-                return "Widgets that read window titles or react to keyboard and app focus."
-            case .screenRecording:
-                return "Only needed to capture the desktop itself; ordinary widgets do not need it."
-            case .appleEvents:
-                return "Lets your own scripts drive Wijeti through AppleScript."
-            }
-        }
-
-        /// `x-apple.systempreferences` anchor for the pane that grants this, if one exists.
-        public var systemSettingsAnchor: String? {
-            switch self {
-            case .location: return "com.apple.preference.security?Privacy_LocationServices"
-            case .fullDisk: return "com.apple.preference.security?Privacy_AllFiles"
-            case .automation: return "com.apple.preference.security?Privacy_Automation"
-            case .notifications: return "com.apple.preference.notifications"
-            case .screenRecording: return "com.apple.preference.security?Privacy_ScreenCapture"
-            case .accessibility: return "com.apple.preference.security?Privacy_Accessibility"
-            case .appleEvents: return nil
-            }
-        }
-
-        /// Permissions that only ever need a one-time grant can be probed. The ones that
-        /// cannot be probed without a prompt report `.unknown` rather than a wrong "granted".
-        public var isProbeable: Bool {
-            switch self {
-            case .location, .notifications, .accessibility: return true
-            case .fullDisk, .screenRecording, .appleEvents, .automation: return false
-            }
-        }
-    }
-
-    public let kind: Kind
-    public var id: Kind { kind }
-
-    public init(kind: Kind) {
-        self.kind = kind
-    }
-}
-
-/// How a permission currently stands, as far as macOS lets us tell without prompting.
-public enum PermissionStatus: Equatable, Sendable {
-    case granted, notDetermined, denied
-    /// Cannot be read without side effects (Full Disk Access, Automation, …).
-    case unknown
-
-    public var label: String {
-        switch self {
-        case .granted: return "Granted"
-        case .notDetermined: return "Not Determined"
-        case .denied: return "Denied"
-        case .unknown: return "Check in Settings"
-        }
-    }
-}
-
-/// Reads live authorisation status. Split out so the UI never touches CLLocationManager
-/// directly and the status logic stays testable.
-///
-/// Refreshes itself whenever the app becomes active, which is how a change made in System
-/// Settings shows up as soon as the user switches back.
-@MainActor
-public final class PermissionProbe: NSObject, ObservableObject, CLLocationManagerDelegate {
-    @Published public private(set) var states: [Permission.Kind: PermissionStatus] = [:]
-
-    private let manager = CLLocationManager()
-    private var activeObserver: NSObjectProtocol?
-
-    public override init() {
-        super.init()
-        manager.delegate = self
-        activeObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
-        }
-    }
-
-    deinit {
-        if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }
-    }
-
-    /// Boolean view kept for callers that only care whether access is granted.
-    public var statuses: [Permission.Kind: Bool] {
-        states.mapValues { $0 == .granted }
-    }
-
-    public func status(for kind: Permission.Kind) -> PermissionStatus {
-        states[kind] ?? .unknown
-    }
-
-    public func refresh() {
-        for kind in Permission.Kind.all where !kind.isProbeable {
-            states[kind] = .unknown
-        }
-        states[.location] = Self.locationStatus(manager.authorizationStatus)
-        states[.accessibility] = AXIsProcessTrusted() ? .granted : .denied
-        UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
-            let status: PermissionStatus
-            switch settings.authorizationStatus {
-            case .notDetermined: status = .notDetermined
-            case .denied: status = .denied
-            default: status = .granted
-            }
-            Task { @MainActor in self?.states[.notifications] = status }
-        }
-    }
-
-    static func locationStatus(_ status: CLAuthorizationStatus) -> PermissionStatus {
-        switch status {
-        case .notDetermined: return .notDetermined
-        case .denied, .restricted: return .denied
-        default: return .granted   // authorizedAlways (and the legacy authorized)
-        }
-    }
-
-    /// Opens the System Settings pane for a permission.
-    @discardableResult
-    public func openSystemSettings(for kind: Permission.Kind) -> Bool {
-        guard let anchor = kind.systemSettingsAnchor,
-              let url = URL(string: "x-apple.systempreferences:\(anchor)")
-        else { return false }
-        return NSWorkspace.shared.open(url)
-    }
-
-    /// Asks macOS to show its own prompt where one exists; otherwise opens the right pane.
-    public func request(_ kind: Permission.Kind) {
-        switch (kind, status(for: kind)) {
-        case (.location, .notDetermined):
-            manager.requestWhenInUseAuthorization()
-        case (.notifications, .notDetermined):
-            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [weak self] _, _ in
-                Task { @MainActor in self?.refresh() }
-            }
-        case (.accessibility, .denied):
-            // Registers the app in the Accessibility list, then shows the pane.
-            let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-            _ = AXIsProcessTrustedWithOptions(options)
-            _ = openSystemSettings(for: kind)
-        default:
-            _ = openSystemSettings(for: kind)
-        }
-    }
-
-    nonisolated public func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        Task { @MainActor in self.refresh() }
-    }
-}
-
-extension Permission.Kind {
-    static let all: [Permission.Kind] = [
-        .location, .notifications, .accessibility, .fullDisk, .automation, .screenRecording, .appleEvents,
-    ]
-
-    /// Only the permissions whose status can be read without prompting.
-    static let allProbeable: [Permission.Kind] = all.filter(\.isProbeable)
-}
 
 // MARK: - Data sources
 
@@ -331,29 +134,60 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
 struct PermissionsView: View {
     @ObservedObject var probe: PermissionProbe
     @ObservedObject var sources: DataSourceSettings
+    @State private var query = ""
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                Text("Permissions")
-                    .font(.headline)
+                HStack {
+                    Text("Permissions")
+                        .font(.headline)
+                    Spacer()
+                    Button("Refresh") { probe.refresh() }
+                        .controlSize(.small)
+                }
 
-                Text("Wijeti itself needs almost nothing. These are for the widgets you add — "
-                     + "macOS will only prompt once per app, and a few must be granted by hand.")
+                Text("Widgets are scripts, so they can ask for almost any access. Grant only what the "
+                     + "widgets you use need. macOS prompts once per app; some permissions can only be "
+                     + "switched on by hand in System Settings.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                VStack(spacing: 0) {
-                    ForEach(Array(Permission.Kind.all.enumerated()), id: \.element) { index, kind in
-                        permissionRow(kind)
-                        if index < Permission.Kind.all.count - 1 { Divider().padding(.leading, 12) }
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Search permissions", text: $query)
+                        .textFieldStyle(.plain)
+                }
+                .padding(7)
+                .background(RoundedRectangle(cornerRadius: 7).fill(Color(nsColor: .controlBackgroundColor)))
+
+                ForEach(PermissionSpec.Group.allCases, id: \.self) { group in
+                    let specs = PermissionCatalog.specs(in: group).filter { $0.matches(query) }
+                    if !specs.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(group.rawValue)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .textCase(.uppercase)
+                            VStack(spacing: 0) {
+                                ForEach(Array(specs.enumerated()), id: \.element.id) { index, spec in
+                                    permissionRow(spec)
+                                    if index < specs.count - 1 { Divider().padding(.leading, 12) }
+                                }
+                            }
+                            .background(
+                                RoundedRectangle(cornerRadius: 9)
+                                    .fill(Color(nsColor: .controlBackgroundColor))
+                            )
+                            if group == .automation {
+                                Text("Automation targets are listed under System Settings → Privacy & Security → Automation only after you press Allow here.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
                     }
                 }
-                .background(
-                    RoundedRectangle(cornerRadius: 9)
-                        .fill(Color(nsColor: .controlBackgroundColor))
-                )
 
                 Divider()
 
@@ -381,12 +215,12 @@ struct PermissionsView: View {
         .onAppear { probe.refresh() }
     }
 
-    private func permissionRow(_ kind: Permission.Kind) -> some View {
-        let status = probe.status(for: kind)
+    private func permissionRow(_ spec: PermissionSpec) -> some View {
+        let status = probe.status(for: spec)
         return HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(kind.title).font(.callout.weight(.medium))
-                Text(kind.reason)
+                Text(spec.title).font(.callout.weight(.medium))
+                Text(spec.reason)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -396,11 +230,9 @@ struct PermissionsView: View {
 
             PermissionBadge(status: status)
 
-            Button(status == .notDetermined ? "Allow" : "Open Settings") {
-                probe.request(kind)
-                sources.lastAction = status == .notDetermined
-                    ? "Asked macOS for \(kind.title)."
-                    : "Opened System Settings → \(kind.title)."
+            Button(probe.actionTitle(for: spec)) {
+                probe.request(spec)
+                sources.lastAction = "Asked macOS for \(spec.title)."
             }
             .controlSize(.small)
         }

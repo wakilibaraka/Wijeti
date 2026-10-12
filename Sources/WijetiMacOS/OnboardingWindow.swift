@@ -182,13 +182,11 @@ struct PermissionBadge: View {
 private struct OnboardingPermissionsView: View {
     @StateObject private var probe = PermissionProbe()
 
-    private var kinds: [Permission.Kind] {
-        [.location, .notifications, .accessibility, .automation]
-    }
+    private var kinds: [PermissionSpec] { PermissionCatalog.specs(in: .essentials) }
 
     var body: some View {
         VStack(spacing: 0) {
-            ForEach(Array(kinds.enumerated()), id: \.element) { index, kind in
+            ForEach(Array(kinds.enumerated()), id: \.element.id) { index, kind in
                 row(kind)
                 if index < kinds.count - 1 { Divider().padding(.leading, 14) }
             }
@@ -198,7 +196,7 @@ private struct OnboardingPermissionsView: View {
         .onAppear { probe.refresh() }
     }
 
-    private func row(_ kind: Permission.Kind) -> some View {
+    private func row(_ kind: PermissionSpec) -> some View {
         let status = probe.status(for: kind)
         return HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
@@ -210,7 +208,7 @@ private struct OnboardingPermissionsView: View {
             }
             Spacer(minLength: 8)
             PermissionBadge(status: status)
-            Button(status == .notDetermined ? "Allow" : "Open Settings") {
+            Button(probe.actionTitle(for: kind)) {
                 probe.request(kind)
             }
             .controlSize(.small)

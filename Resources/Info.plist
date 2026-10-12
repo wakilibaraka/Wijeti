@@ -2,25 +2,81 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleDevelopmentRegion</key><string>en</string>
-    <key>CFBundleExecutable</key><string>WijetiApp</string>
-    <key>CFBundleIdentifier</key><string>com.wijeti.Wijeti</string>
-    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-    <key>CFBundleName</key><string>Wijeti</string>
-    <key>CFBundleDisplayName</key><string>Wijeti</string>
-    <key>CFBundlePackageType</key><string>APPL</string>	<key>CFBundleShortVersionString</key>	<string>0.1.0</string>
-	<key>CFBundleVersion</key>	<string>1</string>
-	<key>LSMinimumSystemVersion</key>	<string>15.0</string>
-	<key>CFBundleIconFile</key>	<string>AppIcon</string>
-    <key>LSUIElement</key><true/>
-    <key>NSPrincipalClass</key><string>NSApplication</string>
-    <key>NSHighResolutionCapable</key><true/>
-    <key>OSAScriptingDefinition</key><string>Wijeti.sdef</string>
-    <key>NSAppleScriptEnabled</key><true/>
-    <key>NSLocationUsageDescription</key><string>Wijeti passes location requests from your widgets to macOS.</string>
-    <key>NSLocationWhenInUseUsageDescription</key><string>Wijeti uses your location to fill in the coordinates that weather widgets ask Open-Meteo for.</string>
-    <key>NSAppleEventsUsageDescription</key><string>Wijeti responds to AppleScript commands about your widgets.</string>
-    <key>NSSupportsAutomaticTermination</key><false/>
-    <key>NSSupportsSuddenTermination</key><false/>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Wijeti</string>
+	<key>CFBundleExecutable</key>
+	<string>WijetiApp</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.wijeti.Wijeti</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Wijeti</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Widgets you install can control other apps (for example Music or Finder) with AppleScript, and Wijeti responds to AppleScript commands about your widgets.</string>
+	<key>NSAppleMusicUsageDescription</key>
+	<string>Widgets you install can read your media library.</string>
+	<key>NSAppleScriptEnabled</key>
+	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Widgets you install can read Bluetooth device information, such as battery levels.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Widgets you install can read your calendar events, for example to show an agenda.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Widgets you install can read your calendar events, for example to show an agenda.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Widgets you install can use the camera.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Widgets you install can read your contacts, for example to show birthdays.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Widgets you install can read files on your Desktop.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Widgets you install can read files in your Documents folder.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Widgets you install can read files in your Downloads folder.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Widgets you install can talk to devices on your local network.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>Wijeti passes location requests from your widgets to macOS.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Wijeti uses your location to fill in the coordinates that weather widgets ask Open-Meteo for.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Widgets you install can listen to the microphone, for example to show audio levels.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>Widgets you install can read files on network volumes.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Widgets you install can show pictures from your photo library.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Widgets you install can read your reminders, for example to show a to-do list.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>Widgets you install can read your reminders, for example to show a to-do list.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Widgets you install can read files on external drives.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Widgets you install can transcribe speech.</string>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
+	<key>OSAScriptingDefinition</key>
+	<string>Wijeti.sdef</string>
 </dict>
 </plist>
