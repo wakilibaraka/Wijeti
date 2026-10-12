@@ -9,16 +9,15 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SERVER="$ROOT/server"
 RELEASE="$SERVER/release"
 
-if [ -x "$RELEASE/node-arm64" ] && [ -f "$RELEASE/server.js" ]; then
+if [ -x "$RELEASE/node-arm64" ] && [ -x "$RELEASE/node-x64" ] && [ -f "$RELEASE/server.js" ]; then
   echo "==> server/release already present, nothing to do"
   exit 0
 fi
 
 NODE_VERSION="${NODE_VERSION:-v20.18.1}"
-ARCH="$(uname -m)"
 
-echo "==> npm install (widget engine dependencies)"
-(cd "$SERVER" && npm install --no-audit --no-fund)
+echo "==> npm ci (widget engine dependencies)"
+(cd "$SERVER" && npm ci --no-audit --no-fund)
 
 mkdir -p "$RELEASE"
 
@@ -27,7 +26,7 @@ echo "==> building server.js"
 
 cp -R "$SERVER/public" "$RELEASE/public"
 cp -R "$SERVER/node_modules" "$RELEASE/node_modules"
-cp "$SERVER/package.json" "$RELEASE/package.json"
+cp -L "$SERVER/package.json" "$RELEASE/package.json.tmp" && mv -f "$RELEASE/package.json.tmp" "$RELEASE/package.json"
 if [ -f "$SERVER/server.js" ]; then
   cp "$SERVER/server.js" "$RELEASE/server.js"
 fi
@@ -41,7 +40,16 @@ for BIN in node-arm64 node-x64; do
   echo "==> downloading node $NODE_VERSION ($BIN)"
   URL="https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-darwin-${BIN#node-}.tar.gz"
   TMP="$(mktemp -d)"
-  curl -fsSL "$URL" | tar -xz -C "$TMP"
+  curl -fsSL "$URL" -o "$TMP/node.tar.gz"
+  # Verify against the SHASUMS256.txt published next to the download before unpacking.
+  EXPECTED="$(curl -fsSL "https://nodejs.org/dist/$NODE_VERSION/SHASUMS256.txt" \
+    | awk -v f="node-$NODE_VERSION-darwin-${BIN#node-}.tar.gz" '$2 == f { print $1 }')"
+  ACTUAL="$(shasum -a 256 "$TMP/node.tar.gz" | awk '{ print $1 }')"
+  if [ -z "$EXPECTED" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
+    echo "checksum mismatch for $BIN download" >&2
+    exit 1
+  fi
+  tar -xz -C "$TMP" -f "$TMP/node.tar.gz"
   cp "$TMP/node-$NODE_VERSION-darwin-${BIN#node-}/bin/node" "$RELEASE/$BIN"
   chmod +x "$RELEASE/$BIN"
   rm -rf "$TMP"
@@ -58,7 +66,6 @@ case "$(uname -m)" in
   arm64) NODE="$HERE/node-arm64" ;;
   *)     NODE="$HERE/node-x64" ;;
 esac
-export ELECTRON_RUN_AS_NODE=1
 exec "$NODE" "$@"
 LAUNCHER
 chmod +x "$RELEASE/localnode"
