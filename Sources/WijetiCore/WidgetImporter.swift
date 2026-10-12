@@ -84,6 +84,8 @@ public struct WidgetImporter: Equatable, Sendable {
         public var installed: [String]
         public var skipped: [String]
         public var failures: [Failure]
+        /// The top-level folder each installed widget now lives in, parallel to `installed`.
+        public var installedFolders: [String] = []
     }
 
     public enum ImportError: LocalizedError, Equatable {
@@ -93,7 +95,7 @@ public struct WidgetImporter: Equatable, Sendable {
         public var errorDescription: String? {
             switch self {
             case let .notAWidget(name):
-                return "\(name) has no index.jsx, index.coffee or index.js."
+                return "\(name) has no index.jsx, index.coffee or index.js (or isn’t a .html page)."
             case let .destinationExists(name):
                 return "\(name) is already installed."
             }
@@ -102,6 +104,8 @@ public struct WidgetImporter: Equatable, Sendable {
 
     static let entryNames = ["index.jsx", "index.coffee", "index.js"]
     static let entryExtensions = ["jsx", "coffee", "js"]
+    /// Plain web pages are accepted too: they are wrapped in a tiny widget that shows them in a frame.
+    static let htmlExtensions = ["html", "htm"]
 
     /// The server derives widget ids from the path: the widget's location relative to the
     /// root, with `/` and `.` turned into `-` (`server/src/resolveWidget.js`). We must match
@@ -132,7 +136,38 @@ public struct WidgetImporter: Equatable, Sendable {
         if isDirectory.boolValue {
             return entryFile(in: url) != nil
         }
-        return Self.entryExtensions.contains(url.pathExtension.lowercased())
+        let ext = url.pathExtension.lowercased()
+        return Self.entryExtensions.contains(ext) || Self.htmlExtensions.contains(ext)
+    }
+
+    /// The widget source that displays `html` in a frame. The page is embedded as a JSON string so
+    /// no characters need escaping by hand, and its scripts run because a frame (unlike
+    /// `innerHTML`) executes them.
+    public static func htmlWrapperSource(html: String, title: String) -> String {
+        let encoded = (try? JSONEncoder().encode(html)).flatMap { String(data: $0, encoding: .utf8) } ?? "\"\""
+        let safeTitle = title.replacingOccurrences(of: "*/", with: "")
+        return """
+        // \(safeTitle): web page wrapped as a widget by Wijeti.
+        export const refreshFrequency = false;
+
+        export const className = `
+          top: 40px;
+          left: 40px;
+          width: 480px;
+          height: 320px;
+          border-radius: 12px;
+          overflow: hidden;
+        `;
+
+        const page = \(encoded);
+
+        export const render = () => (
+          <iframe
+            srcDoc={page}
+            style={{ width: '100%', height: '100%', border: 0, background: 'transparent' }}
+          />
+        );
+        """
     }
 
     /// Copies each URL into the widget directory. Existing widgets of the same name are
@@ -158,6 +193,27 @@ public struct WidgetImporter: Equatable, Sendable {
                     continue
                 }
                 destination = widgetDirectory.appendingPathComponent(name)
+            } else if Self.htmlExtensions.contains(url.pathExtension.lowercased()) {
+                let stem = url.deletingPathExtension().lastPathComponent
+                let folder = widgetDirectory.appendingPathComponent("\(stem).widget")
+                if fileManager.fileExists(atPath: folder.path) {
+                    result.skipped.append(folder.lastPathComponent)
+                    continue
+                }
+                do {
+                    let html = try String(contentsOf: url, encoding: .utf8)
+                    try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+                    try Self.htmlWrapperSource(html: html, title: stem)
+                        .write(to: folder.appendingPathComponent("index.jsx"), atomically: true, encoding: .utf8)
+                    result.installed.append(
+                        Self.widgetID(for: folder.appendingPathComponent("index.jsx"), root: widgetDirectory)
+                    )
+                    result.installedFolders.append(folder.lastPathComponent)
+                } catch {
+                    try? fileManager.removeItem(at: folder)
+                    result.failures.append(Result.Failure(url: url, reason: error.localizedDescription))
+                }
+                continue
             } else {
                 guard Self.entryExtensions.contains(url.pathExtension.lowercased()) else {
                     result.failures.append(
@@ -176,6 +232,7 @@ public struct WidgetImporter: Equatable, Sendable {
             do {
                 try copy(from: url, to: destination, isDirectory: isDirectory.boolValue)
                 result.installed.append(Self.widgetID(for: destination, root: widgetDirectory))
+                result.installedFolders.append(destination.lastPathComponent)
             } catch {
                 result.failures.append(Result.Failure(url: url, reason: error.localizedDescription))
             }
