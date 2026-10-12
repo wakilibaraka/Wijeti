@@ -75,3 +75,21 @@ final class SettingsStoreHardeningTests: XCTestCase {
         XCTAssertEqual(store.load().count, 40)
     }
 }
+
+final class SettingsStoreUnknownKeyTests: XCTestCase {
+    func testUnknownPerWidgetKeysSurviveASave() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("wijeti-unknown-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("WidgetSettings.json")
+        try Data(#"{"a":{"hidden":false,"futureFlag":"keep-me"}}"#.utf8).write(to: file)
+
+        let store = SettingsStore(url: file)
+        try store.update("a") { $0.hidden = true }
+
+        let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: [String: Any]]
+        XCTAssertEqual(raw?["a"]?["futureFlag"] as? String, "keep-me")
+        XCTAssertEqual(raw?["a"]?["hidden"] as? Bool, true)
+    }
+}

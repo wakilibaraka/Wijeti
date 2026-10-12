@@ -65,13 +65,11 @@ struct WidgetLibraryView: View {
                 onSkip: { model.skipCustomization() }
             )
         }
-        .alert(isPresented: $model.showPopup) {
-            Alert(
-                title: Text(model.popupTitle),
-                message: Text(model.popupMessage),
-                primaryButton: .default(Text(model.popupActionLabel), action: { model.popupAction?() }),
-                secondaryButton: .cancel()
-            )
+        .alert(model.popupTitle, isPresented: $model.showPopup) {
+            Button(model.popupActionLabel) { model.popupAction?() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(model.popupMessage)
         }
     }
 

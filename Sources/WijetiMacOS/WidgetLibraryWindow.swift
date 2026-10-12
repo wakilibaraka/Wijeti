@@ -59,6 +59,7 @@ public final class WidgetLibraryWindow: NSWindowController, NSWindowDelegate {
     /// after the user happened to trigger an action that called `reload()`.
     @MainActor
     public override func showWindow(_ sender: Any?) {
+        model.loadCatalog()
         model.reload()
         super.showWindow(sender)
         guard !didShowWindow else { return }
@@ -375,7 +376,9 @@ public final class WidgetLibraryModel: ObservableObject {
     /// Re-reads the bundled catalog and everything that derives from the server's state.
     /// Reserved for the points where the catalog itself can have changed.
     public func reload() {
-        loadCatalog()
+        // The bundled catalog only changes when the library is opened or refreshed, so toggles
+        // and imports must not re-read and re-stat every preset each time.
+        if catalog.presets.isEmpty { loadCatalog() }
         refreshInstalledFromHost()
     }
 

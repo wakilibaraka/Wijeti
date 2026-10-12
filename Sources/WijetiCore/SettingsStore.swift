@@ -41,7 +41,19 @@ public final class SettingsStore {
         lock.lock(); defer { lock.unlock() }
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = try encoder.encode(settings)
+        // Keys this version does not know about (written by a newer app or by the server) are
+        // carried over per widget instead of being dropped by the typed round trip.
+        let existing = (try? JSONSerialization.jsonObject(with: Data(contentsOf: url))) as? [String: Any] ?? [:]
+        var merged: [String: Any] = [:]
+        for (id, value) in settings {
+            var entry = existing[id] as? [String: Any] ?? [:]
+            let encoded = try encoder.encode(value)
+            if let fresh = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] {
+                entry.merge(fresh) { _, new in new }
+            }
+            merged[id] = entry
+        }
+        let data = try JSONSerialization.data(withJSONObject: merged, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: url, options: .atomic)
     }
 
