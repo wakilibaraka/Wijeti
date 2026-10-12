@@ -249,7 +249,7 @@ struct WidgetLibraryView: View {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Search", text: $model.search)
                     .textFieldStyle(.plain)
-                    .frame(minWidth: 90, maxWidth: 150)
+                    .frame(minWidth: 70, maxWidth: 120)
                 if !model.search.isEmpty {
                     Button { model.search = "" } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
@@ -286,6 +286,7 @@ struct WidgetLibraryView: View {
                 model.chooseFilesToImport()
             } label: {
                 Label("Add Widget", systemImage: "plus")
+                    .fixedSize()
             }
             .buttonStyle(.borderedProminent)
             .help("Add your own widgets: .zip, folders, .jsx, .js, .coffee or .html files")

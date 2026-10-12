@@ -1,4 +1,16 @@
-# ⚡ Wijeti
+<p align="center">
+  <img src="docs/screenshots/app-icon.png" width="128" alt="Wijeti app icon">
+</p>
+
+<h1 align="center">Wijeti</h1>
+
+<p align="center">Native desktop widgets for macOS, written in HTML and JavaScript.</p>
+
+<p align="center">
+  <a href="https://github.com/wakilibaraka/Wijeti/releases/latest"><b>Download</b></a> ·
+  <a href="INSTALL.md">Install guide</a> ·
+  <a href="RELEASE_NOTES.md">Release notes</a>
+</p>
 
 A native Swift desktop widget host for macOS: the spirit of
 [Übersicht](https://github.com/felixhageloh/uebersicht) rewritten in Swift, with a menu bar app, a
@@ -6,6 +18,10 @@ widget library with live preview, and permissions that cover what widgets actual
 
 > **Beta.** Wijeti `0.1.0-beta.1` is ad-hoc signed and not notarized. Follow
 > **[INSTALL.md](INSTALL.md)** for the safe one-time steps to open it.
+
+<p align="center">
+  <img src="docs/screenshots/library-grid.png" alt="Widget Library, grid view with live preview">
+</p>
 
 ## Download
 
@@ -32,6 +48,16 @@ Requires macOS 15 or later. Updates arrive automatically (Settings → General �
   Preferences, Check for Updates.
 - **Settings.** General, Widgets, Permissions, Advanced (engine health, restart, developer mode).
 - **AppleScript.** `refresh`, `reload`, `count widgets`, and `every widget` with properties.
+
+## Screenshots
+
+| Library (list view) | Onboarding |
+| --- | --- |
+| <img src="docs/screenshots/library-list.png" alt="Library list view"> | <img src="docs/screenshots/onboarding.png" alt="Onboarding"> |
+
+| Settings | Permissions | Advanced |
+| --- | --- | --- |
+| <img src="docs/screenshots/settings-general.png" alt="Settings"> | <img src="docs/screenshots/settings-permissions.png" alt="Permissions"> | <img src="docs/screenshots/settings-advanced.png" alt="Advanced"> |
 
 ## Writing a widget
 
@@ -119,3 +145,7 @@ unchanged. Wijeti is an independent Swift reimplementation of the host applicati
 `server/` and the upstream widget metadata are GPL-3.0 — the server is a GPL-3.0 module, and
 GPL code cannot be statically linked into a non-GPL program without exposing the link. Here
 the server runs as a separate process. The rest of Wijeti is MIT.
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). Third-party licenses: [NOTICE.md](NOTICE.md).
