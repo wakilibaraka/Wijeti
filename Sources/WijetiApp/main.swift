@@ -144,6 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         tray.onShowPreferences = { [weak self] in self?.preferences.show() }
         tray.onOpenLibrary = { [weak self] in self?.library.show() }
+        tray.onAddWidgets = { [weak self] in self?.library.addWidgets() }
         tray.onQuit = { NSApp.terminate(nil) }
         preferences.onOpenLibrary = { [weak self] in self?.library.show() }
         host.onServerStopped = { [weak self] in

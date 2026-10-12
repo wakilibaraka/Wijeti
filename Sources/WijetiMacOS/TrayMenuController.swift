@@ -16,6 +16,7 @@ public final class TrayMenuController: NSObject, NSMenuDelegate {
 
     public var onShowPreferences: (() -> Void)?
     public var onOpenLibrary: (() -> Void)?
+    public var onAddWidgets: (() -> Void)?
     public var onQuit: (() -> Void)?
 
     public init(host: HostApp) {
@@ -63,6 +64,9 @@ public final class TrayMenuController: NSObject, NSMenuDelegate {
         let library = makeMenuItem("Widget Library…", #selector(openLibrary))
         library.keyEquivalent = "l"
         menu.addItem(library)
+        let addWidgets = makeMenuItem("Add Widgets…", #selector(addWidgets))
+        addWidgets.keyEquivalent = "n"
+        menu.addItem(addWidgets)
         let refreshAll = makeMenuItem("Refresh All Widgets", #selector(refreshAll))
         refreshAll.keyEquivalent = "r"
         menu.addItem(refreshAll)
@@ -229,6 +233,7 @@ public final class TrayMenuController: NSObject, NSMenuDelegate {
     @objc private func openWidgetFolder() { host.revealWidgetDirectory() }
     @objc private func installBundledWidgets() { host.installPresets() }
     @objc private func openLibrary() { onOpenLibrary?() }
+    @objc private func addWidgets() { onAddWidgets?() }
     @objc private func visitGallery() { host.visitGallery() }
     @objc private func showPreferences() { onShowPreferences?() }
     @objc private func showAllWidgets() {

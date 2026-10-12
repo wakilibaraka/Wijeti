@@ -34,12 +34,13 @@ public final class WidgetLibraryWindow: NSWindowController, NSWindowDelegate {
         // The sidebar samples the desktop through the window, so the window itself must not
         // be opaque. The content and detail panes paint their own background, so the sidebar
         // is the only translucent surface.
-        window.isOpaque = false
-        window.backgroundColor = .clear
+        // Opaque: a clear window left the title bar and traffic-light strip see-through.
+        window.isOpaque = true
+        window.backgroundColor = .windowBackgroundColor
         window.isReleasedWhenClosed = false
         super.init(window: window)
         window.delegate = self
-        window.setContentSize(NSSize(width: 1180, height: 660))
+        window.setContentSize(NSSize(width: 1440, height: 880))
         window.center()
     }
 
@@ -73,6 +74,13 @@ public final class WidgetLibraryWindow: NSWindowController, NSWindowDelegate {
     @MainActor
     public override func awakeFromNib() {
         fatalError("WidgetLibraryWindow should not be loaded from a nib")
+    }
+
+    /// "Add Widgets…" from the menu bar: bring the library forward, then pick files.
+    @MainActor
+    public func addWidgets() {
+        show()
+        model.chooseFilesToImport()
     }
 
     /// Public entry point used by the app delegate and the verification runner.
@@ -202,9 +210,30 @@ public final class WidgetLibraryModel: ObservableObject {
         public var visible: Bool
         public var inBackground: Bool
         public var onAllScreens: Bool
+        /// Top-level folder in the widgets directory; the key for the user's name and category.
+        public var folder: String?
+        public var category: String?
+        /// True for widgets that are not part of the bundled catalog.
+        public var isCustom = false
+    }
+
+    /// What the rename / classify sheet is editing.
+    public struct CustomizeTarget: Identifiable, Equatable {
+        public var id: String { folder }
+        public let folder: String
+        public var title: String
+        public var category: String
     }
 
     @Published public var installed: [Installed] = []
+    @Published public var userMeta: [String: UserWidgetMeta] = [:]
+    /// The imported widget selected in the inspector (by folder), when no bundled preset is.
+    @Published public var selectedCustomFolder: String?
+    @Published public var customizing: CustomizeTarget?
+    private var customizeQueue: [CustomizeTarget] = []
+    private lazy var userStore = UserWidgetStore(
+        url: host.settingsDirectoryURL.appendingPathComponent(UserWidgetStore.fileName)
+    )
     @Published public var catalog: PresetCatalog = PresetCatalog(presets: [])
     /// Why the bundled library is empty, when it is empty for a reason other than
     /// "there are none". Set by `loadCatalog()` from the loader's own report.
@@ -305,6 +334,7 @@ public final class WidgetLibraryModel: ObservableObject {
 
     /// Selects a preset and shows it in the preview pane. Nothing is installed.
     public func select(_ preset: Preset) {
+        selectedCustomFolder = nil
         selectedPreset = preset
         previewController.show(preset, from: presetsDirectory)
     }
@@ -351,16 +381,33 @@ public final class WidgetLibraryModel: ObservableObject {
     /// stats every preset file, so it is the wrong thing to call from a 1 Hz timer. Nothing
     /// here touches the user's filters or selection, so it never disturbs what is on screen.
     public func refreshInstalledFromHost() {
-        // installed widgets come from the running server's state
+        userMeta = userStore.load()
+        // Map each folder in the widgets directory to the server id prefix it produces, once per
+        // refresh, so an installed widget can be tied back to the folder it lives in.
+        let directory = host.widgetDirectoryURL
+        let folders = ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? [])
+            .filter { !$0.hasPrefix(".") }
+            .map { name in
+                (name: name, base: WidgetImporter.widgetID(for: directory.appendingPathComponent(name), root: directory))
+            }
+        let presetIDs = Set(catalog.presets.map(\.id))
         installed = host.widgetIDs.compactMap { id in
-            guard host.widgetDirectoryURL.appendingPathComponent(id).path != "/" else { return nil }
+            guard directory.appendingPathComponent(id).path != "/" else { return nil }
             let settings = host.settings(for: id)
+            let folder = folders
+                .filter { id == $0.base || id.hasPrefix($0.base + "-") }
+                .max { $0.base.count < $1.base.count }?.name
+            let meta = folder.flatMap { userMeta[$0] }
+            let custom = folder.map { !presetIDs.contains($0) } ?? true
             return Installed(
                 id: id,
-                title: id.replacingOccurrences(of: "-", with: " "),
+                title: meta?.title ?? (folder.map(UserWidgetStore.defaultTitle(forFolder:)) ?? id.replacingOccurrences(of: "-", with: " ")),
                 visible: !settings.hidden,
                 inBackground: settings.inBackground,
-                onAllScreens: settings.showOnAllScreens
+                onAllScreens: settings.showOnAllScreens,
+                folder: folder,
+                category: meta?.category,
+                isCustom: custom
             )
         }
         installedPresetIDs = Set(
@@ -377,7 +424,59 @@ public final class WidgetLibraryModel: ObservableObject {
 
     /// Categories for the filter chip bar (in preferred order).
     public var categories: [String] {
-        PresetCatalog.preferredOrder.filter { category in catalog.presets.contains { $0.category == category } }
+        let bundled = PresetCatalog.preferredOrder.filter { category in catalog.presets.contains { $0.category == category } }
+        let custom = Set(customWidgets.compactMap(\.category)).subtracting(bundled).sorted()
+        return bundled + custom
+    }
+
+    /// Every category a user can file an imported widget under.
+    public var assignableCategories: [String] {
+        var all = PresetCatalog.preferredOrder
+        for category in categories where !all.contains(category) { all.append(category) }
+        return all
+    }
+
+    /// Installed widgets the user brought themselves, filtered by the current search and category.
+    public var customWidgets: [Installed] {
+        installed.filter { $0.isCustom }
+    }
+
+    public var filteredCustomWidgets: [Installed] {
+        let needle = search.lowercased()
+        return customWidgets.filter { widget in
+            (selectedCategory == nil || widget.category == selectedCategory)
+                && (needle.isEmpty || widget.title.lowercased().contains(needle))
+        }
+    }
+
+    // MARK: - Naming and classifying
+
+    public func beginCustomize(_ widget: Installed) {
+        guard let folder = widget.folder else { return }
+        customizing = CustomizeTarget(folder: folder, title: widget.title, category: widget.category ?? "Other")
+    }
+
+    public func saveCustomization(_ target: CustomizeTarget) {
+        let title = target.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let category = target.category.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try userStore.set(
+                UserWidgetMeta(title: title.isEmpty ? nil : title, category: category.isEmpty ? nil : category),
+                for: target.folder
+            )
+        } catch {
+            status = "Couldn’t save the name: \(error.localizedDescription)"
+        }
+        advanceCustomizeQueue()
+        refreshInstalledFromHost()
+    }
+
+    public func skipCustomization() {
+        advanceCustomizeQueue()
+    }
+
+    private func advanceCustomizeQueue() {
+        customizing = customizeQueue.isEmpty ? nil : customizeQueue.removeFirst()
     }
 
     /// All presets, optionally filtered by category and search. Flat list — no section
@@ -532,7 +631,7 @@ public final class WidgetLibraryModel: ObservableObject {
     public func importDropped(_ urls: [URL]) {
         let usable = urls.filter { importer.canImport($0) || $0.pathExtension.lowercased() == "zip" }
         guard !usable.isEmpty else {
-            status = "Drop a widget folder, a .jsx / .coffee / .js file, or a .zip archive."
+            status = "Drop a widget folder, a .jsx / .coffee / .js / .html file, or a .zip archive."
             return
         }
         let zips = usable.filter { $0.pathExtension.lowercased() == "zip" }
@@ -583,6 +682,11 @@ public final class WidgetLibraryModel: ObservableObject {
             status = parts.joined(separator: " · ")
             host.reloadWidgets()
             reload()
+            // Offer to name and classify what just arrived, one sheet at a time.
+            customizeQueue = result.installedFolders.map {
+                CustomizeTarget(folder: $0, title: UserWidgetStore.defaultTitle(forFolder: $0), category: "Other")
+            }
+            if !customizeQueue.isEmpty { advanceCustomizeQueue() }
         } catch {
             status = "Import failed: \(error.localizedDescription)"
         }
@@ -595,8 +699,8 @@ public final class WidgetLibraryModel: ObservableObject {
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = true
         panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Downloads")
-        panel.prompt = "Install"
-        panel.message = "Choose a widget folder, or a .jsx / .coffee / .js file."
+        panel.prompt = "Add"
+        panel.message = "Choose widgets to add: a .zip, a folder, or a .jsx / .coffee / .js / .html file."
         guard panel.runModal() == .OK else { return }
         importDropped(panel.urls)
     }
@@ -699,6 +803,8 @@ public final class WidgetLibraryModel: ObservableObject {
             status = "Could not remove \(widget.title)."
             return
         }
+        try? userStore.remove(folder: folder)
+        if selectedCustomFolder == folder { selectedCustomFolder = nil }
         status = "Removed \(widget.title)."
         host.reloadWidgets()
         reload()
