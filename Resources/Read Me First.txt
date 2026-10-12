@@ -1,0 +1,17 @@
+WIJETI (beta) — FIRST OPEN
+
+1. Drag Wijeti onto Applications.
+2. Double-click Wijeti. macOS will say it cannot verify the app. That is expected: beta builds are
+   ad-hoc signed and not notarized.
+3. Allow it ONE of these ways:
+
+   A) System Settings > Privacy & Security > scroll to "Security" > click "Open Anyway"
+      next to Wijeti, then confirm.
+
+   B) In Terminal:
+        xattr -dr com.apple.quarantine /Applications/Wijeti.app
+
+Only download Wijeti from https://github.com/wakilibaraka/Wijeti/releases and check the .sha256
+file if you can (shasum -a 256 -c <file>.sha256).
+
+Full instructions: INSTALL.md in the repository.
