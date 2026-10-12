@@ -4,6 +4,12 @@ import Darwin
 import Foundation
 
 public extension URL {
+    /// The path with the home folder abbreviated to `~`, for logs that may end up in bug reports.
+    var logPath: String {
+        let home = NSHomeDirectory()
+        return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+    }
+
     /// The canonical form of a path: symlinks resolved, `..` collapsed, existing ancestors
     /// resolved even when the tail does not exist yet.
     ///
@@ -180,6 +186,10 @@ public struct WidgetImporter: Equatable, Sendable {
     /// Removes an installed widget and reports the id the server will drop.
     @discardableResult
     public func removeWidget(named name: String) -> String? {
+        // A name is one path component: anything else could escape the widget directory.
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else {
+            return nil
+        }
         let destination = widgetDirectory.appendingPathComponent(name)
         guard entryFile(in: destination) != nil else { return nil }
         try? fileManager.removeItem(at: destination)

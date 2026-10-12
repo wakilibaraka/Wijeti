@@ -144,7 +144,7 @@ public struct PresetCatalog: Codable, Equatable, Sendable {
             log("catalog: skipped unreadable entry \"\(name)\"")
         }
         log(
-            "catalog: \(decoded.count) preset(s) from \(directory.path)"
+            "catalog: \(decoded.count) preset(s) from \(directory.logPath)"
                 + (problem.map { " — \($0)" } ?? "")
         )
 

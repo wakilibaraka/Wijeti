@@ -147,3 +147,79 @@ final class ServerSupervisorTests: XCTestCase {
         XCTAssertEqual(launcher.portsAttempted, ["41416"], "a failed launch retries the same port")
     }
 }
+
+final class ServerSupervisorResilienceTests: XCTestCase {
+    private var launcher: FakeLauncher!
+    private var delays: [TimeInterval] = []
+    private var scheduled: [() -> Void] = []
+
+    private func make() -> ServerSupervisor {
+        ServerSupervisor(
+            basePort: 41416,
+            executable: URL(fileURLWithPath: "/usr/bin/true"),
+            argumentsForPort: { ["-p", String($0)] },
+            launcher: launcher,
+            restartDelay: 1.0,
+            scheduler: { [weak self] delay, block in
+                self?.delays.append(delay)
+                self?.scheduled.append(block)
+            },
+            log: { _ in }
+        )
+    }
+
+    private func fireRestart() {
+        let pending = scheduled
+        scheduled.removeAll()
+        pending.forEach { $0() }
+    }
+
+    override func setUp() {
+        launcher = FakeLauncher()
+        delays = []
+        scheduled = []
+    }
+
+    func testCrashLoopBacksOffExponentially() {
+        let supervisor = make()
+        supervisor.start()
+        for _ in 0..<4 {
+            launcher.lastHandle?.exit()
+            fireRestart()
+        }
+        XCTAssertEqual(delays, [1, 2, 4, 8])
+    }
+
+    func testCrashLoopEventuallyGivesUp() {
+        let supervisor = make()
+        supervisor.start()
+        for _ in 0..<ServerSupervisor.maxConsecutiveFailures {
+            launcher.lastHandle?.exit()
+            fireRestart()
+        }
+        XCTAssertTrue(supervisor.gaveUp)
+    }
+
+    func testSuccessfulStartResetsBackoff() {
+        let supervisor = make()
+        supervisor.start()
+        launcher.lastHandle?.exit()
+        fireRestart()
+        launcher.lastHandle?.emit("server started on port 41416\n")
+        launcher.lastHandle?.exit()
+        fireRestart()
+        XCTAssertEqual(delays, [1, 1])
+    }
+
+    func testStaleTerminationDoesNotAffectNewProcess() {
+        let supervisor = make()
+        supervisor.start()
+        let old = launcher.lastHandle!
+        supervisor.stop()
+        XCTAssertTrue(supervisor.start())
+        old.exit()
+        XCTAssertTrue(supervisor.isRunning)
+        XCTAssertFalse(supervisor.restartScheduled)
+        XCTAssertEqual(launcher.handles.count, 2)
+    }
+}

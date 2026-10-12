@@ -34,6 +34,11 @@ public final class ServerSupervisor {
     public typealias Scheduler = (TimeInterval, @escaping () -> Void) -> Void
     public typealias Log = (String) -> Void
 
+    /// Consecutive launches that died without ever reporting `started` before the supervisor
+    /// stops retrying. Each failure doubles the restart delay, up to `maxRestartDelay`.
+    public static let maxConsecutiveFailures = 8
+    public static let maxRestartDelay: TimeInterval = 30
+
     public private(set) var port: Int
     public private(set) var portOffset: Int = 0
     public private(set) var isRunning: Bool = false
@@ -56,6 +61,12 @@ public final class ServerSupervisor {
     private var parser = ServerEventParser()
     private var handle: ServerProcessHandle?
     private var shuttingDown = false
+    /// Bumped on every launch. A termination callback carries the generation of the process
+    /// it belongs to, so a late callback from a replaced process cannot tear down its successor.
+    private var generation = 0
+    private var consecutiveFailures = 0
+    private var didStartThisLaunch = false
+    public private(set) var nextRestartDelay: TimeInterval = 0
     /// The widget server reports one bind failure several times over: `server.coffee`
     /// logs the error and then rethrows it, so the same `EADDRINUSE` arrives on multiple
     /// lines. The offset must advance once per launch, not once per line.
@@ -90,15 +101,18 @@ public final class ServerSupervisor {
         shuttingDown = false
         gaveUp = false
         handledAddressInUse = false
+        didStartThisLaunch = false
         parser = ServerEventParser()
         port = basePort + portOffset
+        generation += 1
+        let launchGeneration = generation
         do {
             let handle = try launcher.launch(
                 ServerLaunchRequest(executable: executable, arguments: argumentsForPort(port))
             )
             self.handle = handle
             isRunning = true
-            log("launching widget server on port \(port): \(executable.path)")
+            log("launching widget server on port \(port): \(executable.lastPathComponent)")
 
             handle.onOutput = { [weak self] data in
                 guard let self else { return }
@@ -107,7 +121,9 @@ public final class ServerSupervisor {
                 }
             }
             handle.onTermination = { [weak self] _ in
-                self?.handleTermination()
+                guard let self, self.generation == launchGeneration else { return }
+                self.parser.flush().forEach { self.handle($0) }
+                self.handleTermination()
             }
             return true
         } catch {
@@ -132,6 +148,7 @@ public final class ServerSupervisor {
     public func stop() {
         shuttingDown = true
         restartScheduled = false
+        generation += 1
         if let handle {
             handle.terminate()
         }
@@ -144,6 +161,8 @@ public final class ServerSupervisor {
         case .started:
             log("server started on port \(port)")
             portOffset = 0
+            didStartThisLaunch = true
+            consecutiveFailures = 0
             onServerStarted?(port)
         case .addressInUse:
             guard !handledAddressInUse else { return }
@@ -166,8 +185,21 @@ public final class ServerSupervisor {
             return
         }
 
+        if didStartThisLaunch {
+            consecutiveFailures = 0
+        } else if !handledAddressInUse {
+            // A launch that died without a port clash and without ever starting is a crash.
+            consecutiveFailures += 1
+            if consecutiveFailures >= Self.maxConsecutiveFailures {
+                gaveUp = true
+                log("widget server keeps crashing on launch. Giving up...")
+                return
+            }
+        }
+        let exponent = max(0, consecutiveFailures - 1)
+        nextRestartDelay = min(restartDelay * pow(2, Double(exponent)), Self.maxRestartDelay)
         restartScheduled = true
-        scheduler(restartDelay) { [weak self] in
+        scheduler(nextRestartDelay) { [weak self] in
             guard let self, !self.shuttingDown else { return }
             self.restartScheduled = false
             _ = self.start()

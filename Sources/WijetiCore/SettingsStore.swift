@@ -6,6 +6,8 @@ public final class SettingsStore {
     private let url: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    /// Serializes read-modify-write so two `update` calls cannot overwrite each other.
+    private let lock = NSRecursiveLock()
 
     public init(url: URL) {
         self.url = url
@@ -17,11 +19,26 @@ public final class SettingsStore {
     public var fileURL: URL { url }
 
     public func load() -> [String: WidgetSettings] {
+        lock.lock(); defer { lock.unlock() }
         guard let data = try? Data(contentsOf: url) else { return [:] }
-        return (try? decoder.decode([String: WidgetSettings].self, from: data)) ?? [:]
+        do {
+            return try decoder.decode([String: WidgetSettings].self, from: data)
+        } catch {
+            quarantineCorruptFile()
+            return [:]
+        }
+    }
+
+    /// Moves an unreadable settings file aside so the next write cannot silently destroy it.
+    private func quarantineCorruptFile() {
+        let backup = url.appendingPathExtension("bak")
+        try? FileManager.default.removeItem(at: backup)
+        try? FileManager.default.moveItem(at: url, to: backup)
+        NSLog("settings file was unreadable and was moved to %@", backup.lastPathComponent)
     }
 
     public func save(_ settings: [String: WidgetSettings]) throws {
+        lock.lock(); defer { lock.unlock() }
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let data = try encoder.encode(settings)
@@ -30,6 +47,7 @@ public final class SettingsStore {
 
     @discardableResult
     public func update(_ widgetID: String, _ mutate: (inout WidgetSettings) -> Void) throws -> WidgetSettings {
+        lock.lock(); defer { lock.unlock() }
         var all = load()
         var settings = all[widgetID] ?? WidgetSettings()
         mutate(&settings)
