@@ -1,7 +1,9 @@
 import AppKit
 import CoreLocation
 import Foundation
+import ApplicationServices
 import SwiftUI
+import UserNotifications
 import WijetiCore
 
 /// A permission Wijeti may need, and how to obtain it.
@@ -14,7 +16,7 @@ import WijetiCore
 /// the user needs to visit.
 public struct Permission: Identifiable, Equatable, Sendable {
     public enum Kind: String, Sendable {
-        case location, fullDisk, automation, notifications, screenRecording, appleEvents
+        case location, notifications, accessibility, fullDisk, automation, screenRecording, appleEvents
 
         public var title: String {
             switch self {
@@ -23,6 +25,7 @@ public struct Permission: Identifiable, Equatable, Sendable {
             case .automation: return "Automation"
             case .notifications: return "Notifications"
             case .screenRecording: return "Screen Recording"
+            case .accessibility: return "Accessibility"
             case .appleEvents: return "Scripting (Apple Events)"
             }
         }
@@ -38,6 +41,8 @@ public struct Permission: Identifiable, Equatable, Sendable {
                 return "Widgets that control other apps, such as toggling a music player."
             case .notifications:
                 return "Background refreshes and alerts from widgets."
+            case .accessibility:
+                return "Widgets that read window titles or react to keyboard and app focus."
             case .screenRecording:
                 return "Only needed to capture the desktop itself; ordinary widgets do not need it."
             case .appleEvents:
@@ -53,6 +58,7 @@ public struct Permission: Identifiable, Equatable, Sendable {
             case .automation: return "com.apple.preference.security?Privacy_Automation"
             case .notifications: return "com.apple.preference.notifications"
             case .screenRecording: return "com.apple.preference.security?Privacy_ScreenCapture"
+            case .accessibility: return "com.apple.preference.security?Privacy_Accessibility"
             case .appleEvents: return nil
             }
         }
@@ -61,9 +67,8 @@ public struct Permission: Identifiable, Equatable, Sendable {
         /// cannot be probed without a prompt report `.unknown` rather than a wrong "granted".
         public var isProbeable: Bool {
             switch self {
-            case .location: return true
-            case .fullDisk, .screenRecording, .appleEvents: return false
-            case .automation, .notifications: return false
+            case .location, .notifications, .accessibility: return true
+            case .fullDisk, .screenRecording, .appleEvents, .automation: return false
             }
         }
     }
@@ -76,32 +81,81 @@ public struct Permission: Identifiable, Equatable, Sendable {
     }
 }
 
+/// How a permission currently stands, as far as macOS lets us tell without prompting.
+public enum PermissionStatus: Equatable, Sendable {
+    case granted, notDetermined, denied
+    /// Cannot be read without side effects (Full Disk Access, Automation, …).
+    case unknown
+
+    public var label: String {
+        switch self {
+        case .granted: return "Granted"
+        case .notDetermined: return "Not Determined"
+        case .denied: return "Denied"
+        case .unknown: return "Check in Settings"
+        }
+    }
+}
+
 /// Reads live authorisation status. Split out so the UI never touches CLLocationManager
 /// directly and the status logic stays testable.
+///
+/// Refreshes itself whenever the app becomes active, which is how a change made in System
+/// Settings shows up as soon as the user switches back.
 @MainActor
-public final class PermissionProbe: ObservableObject {
-    @Published public private(set) var statuses: [Permission.Kind: Bool] = [:]
+public final class PermissionProbe: NSObject, ObservableObject, CLLocationManagerDelegate {
+    @Published public private(set) var states: [Permission.Kind: PermissionStatus] = [:]
 
     private let manager = CLLocationManager()
+    private var activeObserver: NSObjectProtocol?
 
-    public init() {
-        // We only ever read the authorization status; never start updating location.
-        manager.delegate = nil
-    }
-
-    public func refresh() {
-        for kind in Permission.Kind.allProbeable {
-            statuses[kind] = status(of: kind)
+    public override init() {
+        super.init()
+        manager.delegate = self
+        activeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
         }
     }
 
-    private func status(of kind: Permission.Kind) -> Bool {
-        switch kind {
-        case .location:
-            // macOS unifies the two authorisation cases into `.authorized`.
-            return manager.authorizationStatus == .authorized
-        default:
-            return false
+    deinit {
+        if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }
+    }
+
+    /// Boolean view kept for callers that only care whether access is granted.
+    public var statuses: [Permission.Kind: Bool] {
+        states.mapValues { $0 == .granted }
+    }
+
+    public func status(for kind: Permission.Kind) -> PermissionStatus {
+        states[kind] ?? .unknown
+    }
+
+    public func refresh() {
+        for kind in Permission.Kind.all where !kind.isProbeable {
+            states[kind] = .unknown
+        }
+        states[.location] = Self.locationStatus(manager.authorizationStatus)
+        states[.accessibility] = AXIsProcessTrusted() ? .granted : .denied
+        UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
+            let status: PermissionStatus
+            switch settings.authorizationStatus {
+            case .notDetermined: status = .notDetermined
+            case .denied: status = .denied
+            default: status = .granted
+            }
+            Task { @MainActor in self?.states[.notifications] = status }
+        }
+    }
+
+    static func locationStatus(_ status: CLAuthorizationStatus) -> PermissionStatus {
+        switch status {
+        case .notDetermined: return .notDetermined
+        case .denied, .restricted: return .denied
+        default: return .granted   // authorizedAlways (and the legacy authorized)
         }
     }
 
@@ -114,25 +168,33 @@ public final class PermissionProbe: ObservableObject {
         return NSWorkspace.shared.open(url)
     }
 
-    /// Asks macOS to show its own prompt. Only location does this on demand; the rest
-    /// are granted in System Settings.
+    /// Asks macOS to show its own prompt where one exists; otherwise opens the right pane.
     public func request(_ kind: Permission.Kind) {
-        switch kind {
-        case .location:
+        switch (kind, status(for: kind)) {
+        case (.location, .notDetermined):
             manager.requestWhenInUseAuthorization()
-            // The prompt is asynchronous; re-read once the user has answered.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                self?.refresh()
+        case (.notifications, .notDetermined):
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [weak self] _, _ in
+                Task { @MainActor in self?.refresh() }
             }
+        case (.accessibility, .denied):
+            // Registers the app in the Accessibility list, then shows the pane.
+            let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(options)
+            _ = openSystemSettings(for: kind)
         default:
             _ = openSystemSettings(for: kind)
         }
+    }
+
+    nonisolated public func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        Task { @MainActor in self.refresh() }
     }
 }
 
 extension Permission.Kind {
     static let all: [Permission.Kind] = [
-        .location, .fullDisk, .automation, .notifications, .screenRecording, .appleEvents,
+        .location, .notifications, .accessibility, .fullDisk, .automation, .screenRecording, .appleEvents,
     ]
 
     /// Only the permissions whose status can be read without prompting.
@@ -196,13 +258,6 @@ public final class DataSourceSettings: ObservableObject {
         openMeteoCity = await service.placemark(for: location)
         return true
     }
-
-    /// The query a widget would call. Empty coordinates mean "auto", which Open-Meteo
-    /// resolves by IP — useful when the user has not set a location and has denied access.
-    public var openMeteoQuery: String {
-        guard hasOpenMeteoLocation else { return "latitude=52.52&longitude=13.41" }
-        return "latitude=\(openMeteoLatitude)&longitude=\(openMeteoLongitude)"
-    }
 }
 
 /// A one-shot CoreLocation read, wrapped so the UI does not own the delegate dance.
@@ -210,15 +265,19 @@ public final class DataSourceSettings: ObservableObject {
 final class LocationProvider: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private var continuation: CheckedContinuation<CLLocation?, Never>?
+    private var authorizationWaiter: CheckedContinuation<Void, Never>?
 
     func currentLocation() async -> CLLocation? {
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyKilometer
         if manager.authorizationStatus == .notDetermined {
             manager.requestWhenInUseAuthorization()
+            // Wait for the user's answer instead of giving up on the first run.
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                authorizationWaiter = continuation
+            }
         }
-        // Nothing to read until the user answers; re-checked once the prompt resolves.
-        guard manager.authorizationStatus == .authorized else { return nil }
+        guard PermissionProbe.locationStatus(manager.authorizationStatus) == .granted else { return nil }
         return await withCheckedContinuation { continuation in
             self.continuation = continuation
             manager.requestLocation()
@@ -247,6 +306,14 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
         Task { @MainActor in
             self.continuation?.resume(returning: latest)
             self.continuation = nil
+        }
+    }
+
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        Task { @MainActor in
+            guard manager.authorizationStatus != .notDetermined else { return }
+            self.authorizationWaiter?.resume()
+            self.authorizationWaiter = nil
         }
     }
 
@@ -315,33 +382,25 @@ struct PermissionsView: View {
     }
 
     private func permissionRow(_ kind: Permission.Kind) -> some View {
-        let granted = probe.statuses[kind] ?? false
-        return HStack(alignment: .top, spacing: 10) {
-            Image(systemName: granted ? "checkmark.circle.fill" : "circle.dashed")
-                .foregroundStyle(granted ? Color.green : Color.secondary)
-                .font(.callout)
-
+        let status = probe.status(for: kind)
+        return HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(kind.title).font(.callout.weight(.medium))
                 Text(kind.reason)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if !kind.isProbeable {
-                    Text(granted ? "Granted" : "Granted in System Settings")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
             }
 
             Spacer(minLength: 8)
 
-            Button(kind.isProbeable ? "Request" : "Open Settings") {
+            PermissionBadge(status: status)
+
+            Button(status == .notDetermined ? "Allow" : "Open Settings") {
                 probe.request(kind)
-                sources.lastAction = kind.isProbeable
+                sources.lastAction = status == .notDetermined
                     ? "Asked macOS for \(kind.title)."
                     : "Opened System Settings → \(kind.title)."
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { probe.refresh() }
             }
             .controlSize(.small)
         }
