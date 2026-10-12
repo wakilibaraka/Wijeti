@@ -1,6 +1,6 @@
 # Third-party notices
 
-Wijeti's own code is covered by `LICENSE`. It bundles and builds on the following components, each
+Wijeti is licensed under the GNU General Public License v3.0 (see `LICENSE`). It bundles and builds on the following components, each
 under its own license. The complete corresponding source for everything shipped in the app is in this
 repository (`server/` is the unmodified engine source).
 

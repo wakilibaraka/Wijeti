@@ -9,7 +9,8 @@
 <p align="center">
   <a href="https://github.com/wakilibaraka/Wijeti/releases/latest"><b>Download</b></a> ·
   <a href="INSTALL.md">Install guide</a> ·
-  <a href="RELEASE_NOTES.md">Release notes</a>
+  <a href="RELEASE_NOTES.md">Release notes</a> ·
+  <a href="https://www.paypal.com/donate/?business=wakilibar%40gmail.com&currency_code=USD">Donate</a>
 </p>
 
 A native Swift desktop widget host for macOS: the spirit of
@@ -142,10 +143,18 @@ unchanged. Wijeti is an independent Swift reimplementation of the host applicati
 
 ## License
 
-`server/` and the upstream widget metadata are GPL-3.0 — the server is a GPL-3.0 module, and
-GPL code cannot be statically linked into a non-GPL program without exposing the link. Here
-the server runs as a separate process. The rest of Wijeti is MIT.
+Wijeti is free and open-source software under the **GNU General Public License v3.0**; see
+[LICENSE](LICENSE). Anyone can use, study, modify and redistribute it, and derived versions must
+stay open under the same license. It bundles the GPL-3.0 Übersicht widget engine (`server/`) and
+other third-party components; see [NOTICE.md](NOTICE.md).
+
+## Support the project
+
+Wijeti is built in spare time and is free. If it is useful to you, you can help keep it going:
+
+[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-GitHub-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/wakilibaraka)
+[![Donate with PayPal](https://img.shields.io/badge/Donate-PayPal-0070ba?logo=paypal&logoColor=white)](https://www.paypal.com/donate/?business=wakilibar%40gmail.com&currency_code=USD)
 
 ## Contributing and security
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). Third-party licenses: [NOTICE.md](NOTICE.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). 
