@@ -138,7 +138,7 @@ in-app code studio, and portability groundwork for other systems.
 
 ## Credits
 
-The widget engine in `server/` is Übersicht's, by Felix Hageloh — MIT licensed, and used
+The widget engine in `server/` is Übersicht's, by Felix Hageloh — GPL-3.0 licensed, and used
 unchanged. Wijeti is an independent Swift reimplementation of the host application.
 
 ## License
