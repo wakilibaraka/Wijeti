@@ -227,6 +227,10 @@ public final class WidgetLibraryModel: ObservableObject {
 
     @Published public var installed: [Installed] = []
     @Published public var userMeta: [String: UserWidgetMeta] = [:]
+    /// Multi-select state. `selectMode` shows checkboxes; `selection` holds the chosen keys
+    /// (a bundled preset id or an imported widget's folder name).
+    @Published public var selectMode = false
+    @Published public var selection = LibrarySelection()
     /// The imported widget selected in the inspector (by folder), when no bundled preset is.
     @Published public var selectedCustomFolder: String?
     @Published public var customizing: CustomizeTarget?
@@ -410,6 +414,7 @@ public final class WidgetLibraryModel: ObservableObject {
                 isCustom: custom
             )
         }
+        selection.retain(only: Set(catalog.presets.map(\.id)).union(installed.compactMap(\.folder)))
         installedPresetIDs = Set(
             catalog.presets.map(\.id).filter { widgetInstalled($0) }
         )
@@ -447,6 +452,100 @@ public final class WidgetLibraryModel: ObservableObject {
             (selectedCategory == nil || widget.category == selectedCategory)
                 && (needle.isEmpty || widget.title.lowercased().contains(needle))
         }
+    }
+
+    // MARK: - Bulk management
+
+    public func installedWidget(forKey key: String) -> Installed? {
+        installed.first { $0.folder == key }
+    }
+
+    public func preset(forKey key: String) -> Preset? {
+        catalog.presets.first { $0.id == key }
+    }
+
+    /// Everything currently selected, resolved to what it is right now.
+    public var selectedPresets: [Preset] { selection.keys.compactMap(preset(forKey:)) }
+    public var selectedInstalled: [Installed] { selection.keys.compactMap(installedWidget(forKey:)) }
+
+    public func exitSelectMode() {
+        selectMode = false
+        selection.clear()
+    }
+
+    /// Installs every selected bundled widget that is not installed yet.
+    public func bulkInstall() {
+        let pending = selectedPresets.filter { !isInstalled($0) }
+        guard !pending.isEmpty else {
+            status = "Everything selected is already installed."
+            return
+        }
+        install(pending)
+    }
+
+    public func bulkSetVisible(_ visible: Bool) {
+        let targets = selectedInstalled
+        guard !targets.isEmpty else { status = "Install the selected widgets first."; return }
+        for widget in targets { host.updateSettings(widget.id) { $0.hidden = !visible } }
+        status = "\(visible ? "Showing" : "Hid") \(targets.count) widget\(targets.count == 1 ? "" : "s")."
+        reload()
+    }
+
+    public func bulkSetInBackground(_ value: Bool) {
+        let targets = selectedInstalled
+        guard !targets.isEmpty else { status = "Install the selected widgets first."; return }
+        for widget in targets { host.updateSettings(widget.id) { $0.inBackground = value } }
+        status = "Updated \(targets.count) widget\(targets.count == 1 ? "" : "s")."
+        reload()
+    }
+
+    public func bulkSetOnAllScreens(_ value: Bool) {
+        let targets = selectedInstalled
+        guard !targets.isEmpty else { status = "Install the selected widgets first."; return }
+        for widget in targets { host.updateSettings(widget.id) { $0.showOnAllScreens = value } }
+        status = "Updated \(targets.count) widget\(targets.count == 1 ? "" : "s")."
+        reload()
+    }
+
+    /// Files imported widgets under one category. Bundled widgets keep the catalog's category.
+    public func bulkSetCategory(_ category: String) {
+        let trimmed = category.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let custom = selectedInstalled.filter { $0.isCustom && $0.folder != nil }
+        let skipped = selection.count - custom.count
+        for widget in custom {
+            guard let folder = widget.folder else { continue }
+            let existing = userMeta[folder]
+            try? userStore.set(UserWidgetMeta(title: existing?.title, category: trimmed), for: folder)
+        }
+        status = skipped > 0
+            ? "Set \(custom.count) to \(trimmed); \(skipped) bundled kept their category."
+            : "Moved \(custom.count) to \(trimmed)."
+        refreshInstalledFromHost()
+    }
+
+    public func confirmBulkRemove() {
+        let targets = selectedInstalled
+        guard !targets.isEmpty else { status = "Nothing selected is installed."; return }
+        popupTitle = "Remove \(targets.count) widget\(targets.count == 1 ? "" : "s")?"
+        popupMessage = "They will be deleted from your widgets folder and stop running. This cannot be undone."
+        popupActionLabel = "Remove"
+        popupAction = { [weak self] in self?.bulkRemove(targets) }
+        showPopup = true
+    }
+
+    private func bulkRemove(_ targets: [Installed]) {
+        var removed = 0
+        for widget in targets {
+            guard let folder = widget.folder, importer.removeWidget(named: folder) != nil else { continue }
+            try? userStore.remove(folder: folder)
+            removed += 1
+        }
+        selection.clear()
+        selectedCustomFolder = nil
+        status = "Removed \(removed) widget\(removed == 1 ? "" : "s")."
+        host.reloadWidgets()
+        reload()
     }
 
     // MARK: - Naming and classifying
@@ -572,7 +671,7 @@ public final class WidgetLibraryModel: ObservableObject {
 
     /// Shows a confirmation popup before removing a preset that is already installed.
     public func confirmRemoveInstalled(_ preset: Preset) {
-        guard let widget = installed.first(where: { $0.id == preset.id }) else { return }
+        guard let widget = installedWidget(for: preset) else { return }
         popupTitle = "Remove \(widget.title)?"
         popupMessage = "This will remove \"\(widget.title)\" from your widgets and stop it from running. This cannot be undone."
         popupActionLabel = "Remove"

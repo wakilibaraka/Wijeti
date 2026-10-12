@@ -22,14 +22,22 @@ struct WidgetLibraryView: View {
     private static let gutter: CGFloat = 16
     private static let radius: CGFloat = 12
 
+    @AppStorage("library.viewMode") private var viewMode = "grid"
+    @AppStorage("library.sidebarCollapsed") private var sidebarCollapsed = false
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+
+    private var showsInspector: Bool {
+        model.selectMode || model.selectedPreset != nil || model.selectedCustomFolder != nil
+    }
+
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
                 .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 260)
         } detail: {
             HStack(spacing: 0) {
                 browser
-                if model.selectedPreset != nil {
+                if showsInspector {
                     Divider()
                     inspector
                         .frame(minWidth: 480, idealWidth: 560, maxWidth: 680)
@@ -37,8 +45,11 @@ struct WidgetLibraryView: View {
                 }
             }
             .background(Color(nsColor: .windowBackgroundColor))
-            .animation(.easeInOut(duration: 0.2), value: model.selectedPreset?.id)
+            .animation(.easeInOut(duration: 0.2), value: showsInspector)
         }
+        .navigationSplitViewStyle(.balanced)
+        .onAppear { columnVisibility = sidebarCollapsed ? .detailOnly : .all }
+        .onChange(of: columnVisibility) { _, value in sidebarCollapsed = (value == .detailOnly) }
         .frame(minWidth: 1100, minHeight: 640)
         .onDrop(of: [.fileURL], isTargeted: $model.isDropTargeted) { providers in
             handleDrop(providers)
@@ -136,16 +147,65 @@ struct WidgetLibraryView: View {
         }
     }
 
-    // MARK: Browser (header + grid / installed list)
+    // MARK: Items
+
+    /// One thing in the library, whether bundled, imported, installed or not.
+    private struct LibraryItem: Identifiable {
+        let key: String
+        var id: String { key }
+        let title: String
+        let subtitle: String
+        let category: String
+        let preset: Preset?
+        let widget: WidgetLibraryModel.Installed?
+        var isCustom: Bool { preset == nil }
+    }
+
+    private var items: [LibraryItem] {
+        if model.showRecentFirst {
+            let needle = model.search.lowercased()
+            return model.installed
+                .filter { needle.isEmpty || $0.title.lowercased().contains(needle) }
+                .map { widget in
+                    let preset = widget.folder.flatMap { model.preset(forKey: $0) }
+                    return LibraryItem(
+                        key: widget.folder ?? widget.id,
+                        title: widget.title,
+                        subtitle: preset?.description ?? "Your widget",
+                        category: preset?.category ?? widget.category ?? "Other",
+                        preset: preset,
+                        widget: widget
+                    )
+                }
+        }
+        let bundled = model.filteredPresets.map { preset in
+            LibraryItem(
+                key: preset.id, title: preset.title, subtitle: preset.description,
+                category: preset.category, preset: preset, widget: model.installedWidget(for: preset)
+            )
+        }
+        let custom = model.filteredCustomWidgets.map { widget in
+            LibraryItem(
+                key: widget.folder ?? widget.id, title: widget.title, subtitle: "Your widget",
+                category: widget.category ?? "Other", preset: nil, widget: widget
+            )
+        }
+        return bundled + custom
+    }
+
+    // MARK: Browser (header + grid / list)
 
     private var browser: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
+        let items = self.items
+        return VStack(alignment: .leading, spacing: 0) {
+            header(items)
             Divider()
-            if model.showRecentFirst {
-                installedList
+            if items.isEmpty {
+                ScrollView { emptyState }
+            } else if viewMode == "list" {
+                listView(items)
             } else {
-                grid
+                gridView(items)
             }
         }
         .frame(minWidth: 380, maxWidth: .infinity)
@@ -156,16 +216,42 @@ struct WidgetLibraryView: View {
         return model.selectedCategory ?? "All Widgets"
     }
 
-    private var header: some View {
+    private func header(_ items: [LibraryItem]) -> some View {
         HStack(spacing: 10) {
+            Button {
+                withAnimation { columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly }
+            } label: {
+                Image(systemName: "sidebar.left")
+            }
+            .buttonStyle(.plain)
+            .help(columnVisibility == .detailOnly ? "Show categories" : "Hide categories")
+            .keyboardShortcut("s", modifiers: [.command, .control])
+
             Text(title)
                 .font(.title2.weight(.semibold))
+            if columnVisibility == .detailOnly {
+                Menu {
+                    Button("All Widgets") { model.selectedCategory = nil; model.showRecentFirst = false }
+                    Button("Installed") { model.selectedCategory = nil; model.showRecentFirst = true }
+                    Divider()
+                    ForEach(model.categories, id: \.self) { category in
+                        Button(category) { model.selectedCategory = category; model.showRecentFirst = false }
+                    }
+                } label: {
+                    Image(systemName: "chevron.down.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Browse categories")
+            }
             Spacer(minLength: 8)
+
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Search", text: $model.search)
                     .textFieldStyle(.plain)
-                    .frame(width: 150)
+                    .frame(minWidth: 90, maxWidth: 150)
                 if !model.search.isEmpty {
                     Button { model.search = "" } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
@@ -177,6 +263,27 @@ struct WidgetLibraryView: View {
             .padding(.vertical, 5)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.12)))
 
+            Picker("View", selection: $viewMode) {
+                Image(systemName: "square.grid.2x2").tag("grid")
+                Image(systemName: "list.bullet").tag("list")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 76)
+            .help("Switch between grid and list")
+
+            if model.selectMode {
+                Button("Done") { model.exitSelectMode() }
+                    .keyboardShortcut(.escape, modifiers: [])
+            } else {
+                Button("Select") {
+                    model.selectedPreset = nil
+                    model.selectedCustomFolder = nil
+                    model.selectMode = true
+                }
+                .help("Select several widgets to manage them together")
+            }
+
             Button {
                 model.chooseFilesToImport()
             } label: {
@@ -186,6 +293,9 @@ struct WidgetLibraryView: View {
             .help("Add your own widgets: .zip, folders, .jsx, .js, .coffee or .html files")
 
             Menu {
+                Button("Select All") { selectAll(items) }
+                    .keyboardShortcut("a", modifiers: .command)
+                Divider()
                 Button("Show All Widgets") { model.enableAllVisibleNow() }
                     .disabled(model.installed.isEmpty)
                 Button("Hide All Widgets") { model.disableAllNow() }
@@ -203,74 +313,192 @@ struct WidgetLibraryView: View {
         .padding(.bottom, 12)
     }
 
-    // MARK: Grid
+    private func selectAll(_ items: [LibraryItem]) {
+        model.selectedPreset = nil
+        model.selectedCustomFolder = nil
+        model.selectMode = true
+        model.selection.selectAll(items.map(\.key))
+    }
 
-    private var grid: some View {
-        ScrollView {
-            if model.filteredPresets.isEmpty {
-                emptyState
-            } else {
-                VStack(alignment: .leading, spacing: Self.gutter) {
-                    LazyVGrid(columns: columns, spacing: Self.gutter) {
-                        ForEach(model.filteredPresets) { preset in
-                            card(preset)
-                        }
-                    }
-                    if !model.filteredCustomWidgets.isEmpty {
-                        Text("Your widgets")
-                            .font(.headline)
-                            .padding(.top, 4)
-                        LazyVGrid(columns: columns, spacing: Self.gutter) {
-                            ForEach(model.filteredCustomWidgets) { widget in
-                                customCard(widget)
-                            }
-                        }
-                    }
-                }
-                .padding(Self.gutter)
-            }
+    // MARK: Selection and tap handling
+
+    /// Click behaviour shared by cards and rows: ⌘ toggles, ⇧ extends a range, and in select
+    /// mode every click toggles. Otherwise a click opens the single-item inspector.
+    private func handleTap(_ item: LibraryItem, in items: [LibraryItem]) {
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.shift), model.selectMode || !model.selection.isEmpty {
+            model.selectMode = true
+            model.selection.extend(to: item.key, in: items.map(\.key))
+        } else if flags.contains(.command) || model.selectMode {
+            model.selectMode = true
+            model.selectedPreset = nil
+            model.selectedCustomFolder = nil
+            model.selection.toggle(item.key)
+        } else if let preset = item.preset {
+            model.select(preset)
+        } else if let widget = item.widget {
+            model.selectedPreset = nil
+            model.selectedCustomFolder = widget.folder
         }
     }
+
+    private func isSelected(_ item: LibraryItem) -> Bool {
+        if model.selectMode { return model.selection.contains(item.key) }
+        if let preset = item.preset { return model.selectedPreset?.id == preset.id }
+        return model.selectedCustomFolder != nil && model.selectedCustomFolder == item.widget?.folder
+    }
+
+    private func leadingIcon(_ item: LibraryItem) -> some View {
+        let chosen = model.selection.contains(item.key)
+        return ZStack {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.accentColor.opacity(model.selectMode && chosen ? 0.9 : 0.14))
+            Image(systemName: model.selectMode
+                ? (chosen ? "checkmark" : "circle")
+                : Self.symbol(forCategory: item.category))
+                .font(.title3)
+                .foregroundStyle(model.selectMode && chosen ? Color.white : Color.accentColor)
+        }
+        .frame(width: 32, height: 32)
+    }
+
+    @ViewBuilder
+    private func statusView(_ item: LibraryItem) -> some View {
+        if let widget = item.widget {
+            Label(widget.visible ? "Installed" : "Hidden",
+                  systemImage: widget.visible ? "checkmark.circle.fill" : "eye.slash")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(widget.visible ? Color.green : Color.secondary)
+        } else if let preset = item.preset {
+            Button("Add") { model.doInstall(preset) }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+        }
+    }
+
+    @ViewBuilder
+    private func itemMenu(_ item: LibraryItem) -> some View {
+        if let widget = item.widget {
+            installedMenu(widget)
+        } else if let preset = item.preset {
+            Button("Add to Desktop") { model.doInstall(preset) }
+        }
+        if let preset = item.preset {
+            Divider()
+            Button("Preview") { model.select(preset) }
+            Button("Reveal Source") { model.revealSource(for: preset) }
+            Button("Edit Source") { model.openSource(for: preset) }
+        }
+        Divider()
+        Button(model.selection.contains(item.key) ? "Deselect" : "Select") {
+            model.selectMode = true
+            model.selectedPreset = nil
+            model.selectedCustomFolder = nil
+            model.selection.toggle(item.key)
+        }
+    }
+
+    // MARK: Grid
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: 220, maximum: 320), spacing: Self.gutter)]
     }
 
-    private func customCard(_ widget: WidgetLibraryModel.Installed) -> some View {
-        let selected = model.selectedCustomFolder != nil && model.selectedCustomFolder == widget.folder
+    private func gridView(_ items: [LibraryItem]) -> some View {
+        let bundled = items.filter { !$0.isCustom }
+        let custom = items.filter { $0.isCustom }
+        return ScrollView {
+            VStack(alignment: .leading, spacing: Self.gutter) {
+                LazyVGrid(columns: columns, spacing: Self.gutter) {
+                    ForEach(bundled) { card($0, in: items) }
+                }
+                if !custom.isEmpty {
+                    Text("Your widgets").font(.headline).padding(.top, 4)
+                    LazyVGrid(columns: columns, spacing: Self.gutter) {
+                        ForEach(custom) { card($0, in: items) }
+                    }
+                }
+            }
+            .padding(Self.gutter)
+        }
+    }
+
+    private func card(_ item: LibraryItem, in items: [LibraryItem]) -> some View {
+        let selected = isSelected(item)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top) {
-                Image(systemName: Self.symbol(forCategory: widget.category ?? "Other"))
-                    .font(.title3)
-                    .foregroundStyle(.tint)
-                    .frame(width: 32, height: 32)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.14)))
+                leadingIcon(item)
                 Spacer()
-                Label(widget.visible ? "On desktop" : "Hidden", systemImage: widget.visible ? "checkmark.circle.fill" : "eye.slash")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(widget.visible ? Color.green : Color.secondary)
+                statusView(item)
             }
-            Text(widget.title).font(.headline).lineLimit(1)
-            Text(widget.category ?? "Uncategorised")
+            Text(item.title).font(.headline).lineLimit(1)
+            Text(item.subtitle)
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
         .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 130, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: Self.radius).fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(
             RoundedRectangle(cornerRadius: Self.radius)
                 .strokeBorder(selected ? Color.accentColor : Color.primary.opacity(0.08), lineWidth: selected ? 2 : 1)
         )
         .contentShape(RoundedRectangle(cornerRadius: Self.radius))
-        .onTapGesture { selectCustom(widget) }
-        .contextMenu { installedMenu(widget) }
+        .onTapGesture { handleTap(item, in: items) }
+        .contextMenu { itemMenu(item) }
     }
 
-    private func selectCustom(_ widget: WidgetLibraryModel.Installed) {
-        model.selectedPreset = nil
-        model.selectedCustomFolder = widget.folder
+    // MARK: List
+
+    private func listView(_ items: [LibraryItem]) -> some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    row(item, in: items)
+                    if index < items.count - 1 { Divider().padding(.leading, 58) }
+                }
+            }
+            .background(RoundedRectangle(cornerRadius: Self.radius).fill(Color(nsColor: .controlBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: Self.radius).strokeBorder(Color.primary.opacity(0.08)))
+            .padding(Self.gutter)
+        }
+    }
+
+    private func row(_ item: LibraryItem, in items: [LibraryItem]) -> some View {
+        HStack(spacing: 12) {
+            leadingIcon(item)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(item.title).fontWeight(.medium).lineLimit(1)
+                    tag(item.category)
+                }
+                Text(item.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            if let widget = item.widget {
+                switches(widget)
+            }
+            statusView(item)
+                .frame(minWidth: 70, alignment: .trailing)
+            if let widget = item.widget {
+                Menu { installedMenu(widget) } label: { Image(systemName: "ellipsis") }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(isSelected(item) ? Color.accentColor.opacity(0.12) : Color.clear)
+        .contentShape(Rectangle())
+        .onTapGesture { handleTap(item, in: items) }
+        .contextMenu { itemMenu(item) }
     }
 
     /// Shared right-click / ⋯ menu for anything installed.
@@ -294,121 +522,6 @@ struct WidgetLibraryView: View {
         Button("Remove…", role: .destructive) { model.confirmRemove(widget) }
     }
 
-    private func card(_ preset: Preset) -> some View {
-        let installed = model.isInstalled(preset)
-        let selected = model.selectedPreset?.id == preset.id
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top) {
-                Image(systemName: Self.symbol(forCategory: preset.category))
-                    .font(.title3)
-                    .foregroundStyle(.tint)
-                    .frame(width: 32, height: 32)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.14)))
-                Spacer()
-                if installed {
-                    Label("Installed", systemImage: "checkmark.circle.fill")
-                        .labelStyle(.titleAndIcon)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.green)
-                } else {
-                    Button("Add") { model.doInstall(preset) }
-                        .controlSize(.small)
-                        .buttonStyle(.borderedProminent)
-                }
-            }
-            Text(preset.title)
-                .font(.headline)
-                .lineLimit(1)
-            Text(preset.description)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 130, alignment: .topLeading)
-        .background(
-            RoundedRectangle(cornerRadius: Self.radius)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Self.radius)
-                .strokeBorder(selected ? Color.accentColor : Color.primary.opacity(0.08), lineWidth: selected ? 2 : 1)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: Self.radius))
-        .onTapGesture { model.select(preset) }
-        .help("Preview \(preset.title)")
-        .contextMenu {
-            if let widget = model.installedWidget(for: preset) {
-                installedMenu(widget)
-            } else {
-                Button("Add to Desktop") { model.doInstall(preset) }
-            }
-            Divider()
-            Button("Preview") { model.select(preset) }
-            Button("Reveal Source") { model.revealSource(for: preset) }
-            Button("Edit Source") { model.openSource(for: preset) }
-        }
-    }
-
-    // MARK: Installed list
-
-    private var installedWidgets: [WidgetLibraryModel.Installed] {
-        let needle = model.search.lowercased()
-        return model.installed.filter {
-            needle.isEmpty || $0.title.lowercased().contains(needle) || $0.id.lowercased().contains(needle)
-        }
-    }
-
-    private var installedList: some View {
-        ScrollView {
-            if installedWidgets.isEmpty {
-                emptyState
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(installedWidgets.enumerated()), id: \.element.id) { index, widget in
-                        installedRow(widget)
-                        if index < installedWidgets.count - 1 { Divider() }
-                    }
-                }
-                .background(RoundedRectangle(cornerRadius: Self.radius).fill(Color(nsColor: .controlBackgroundColor)))
-                .overlay(RoundedRectangle(cornerRadius: Self.radius).strokeBorder(Color.primary.opacity(0.08)))
-                .padding(Self.gutter)
-            }
-        }
-    }
-
-    private func installedRow(_ widget: WidgetLibraryModel.Installed) -> some View {
-        HStack(spacing: 12) {
-            Circle()
-                .fill(widget.visible ? Color.green : Color.secondary.opacity(0.4))
-                .frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(widget.title)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if let category = widget.category {
-                    Text(category).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Spacer(minLength: 8)
-            switches(widget)
-            Menu {
-                installedMenu(widget)
-            } label: {
-                Image(systemName: "ellipsis")
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .contentShape(Rectangle())
-        .contextMenu { installedMenu(widget) }
-    }
-
     /// The three per-widget switches. Shown only where a widget is being *managed*.
     private func switches(_ widget: WidgetLibraryModel.Installed) -> some View {
         HStack(spacing: 14) {
@@ -416,7 +529,7 @@ struct WidgetLibraryView: View {
                 get: { widget.visible },
                 set: { model.setVisible($0, for: widget.id) }
             ))
-            Toggle("Behind apps", isOn: Binding(
+            Toggle("Behind", isOn: Binding(
                 get: { widget.inBackground },
                 set: { model.setInBackground($0, for: widget.id) }
             ))
@@ -471,7 +584,9 @@ struct WidgetLibraryView: View {
 
     private var inspector: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let folder = model.selectedCustomFolder,
+            if model.selectMode {
+                bulkPanel
+            } else if let folder = model.selectedCustomFolder,
                let widget = model.installed.first(where: { $0.folder == folder }) {
                 customInspector(widget)
             } else if let preset = model.selectedPreset {
@@ -562,6 +677,89 @@ struct WidgetLibraryView: View {
             }
             .controlSize(.small)
         }
+        .padding(Self.gutter)
+    }
+
+    // MARK: Bulk panel
+
+    @State private var bulkCategory = ""
+    @State private var creatingBulkCategory = false
+
+    private var bulkPanel: some View {
+        let count = model.selection.count
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text(count == 0 ? "Select widgets" : "\(count) selected")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                Button("Done") { model.exitSelectMode() }
+                    .controlSize(.small)
+            }
+            if count == 0 {
+                Text("Click widgets to select them. ⌘-click toggles one, ⇧-click selects a range, ⌘A selects everything shown.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                let notInstalled = model.selectedPresets.filter { !model.isInstalled($0) }.count
+                if notInstalled > 0 {
+                    Button("Add \(notInstalled) to Desktop") { model.bulkInstall() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                }
+                GroupBox("Show") {
+                    HStack {
+                        Button("Show") { model.bulkSetVisible(true) }
+                        Button("Hide") { model.bulkSetVisible(false) }
+                        Spacer()
+                    }
+                    .padding(.vertical, 4)
+                }
+                GroupBox("Placement") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Behind other apps").frame(width: 150, alignment: .leading)
+                            Button("On") { model.bulkSetInBackground(true) }
+                            Button("Off") { model.bulkSetInBackground(false) }
+                        }
+                        HStack {
+                            Text("On every screen").frame(width: 150, alignment: .leading)
+                            Button("On") { model.bulkSetOnAllScreens(true) }
+                            Button("Off") { model.bulkSetOnAllScreens(false) }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                GroupBox("Category (imported widgets)") {
+                    HStack {
+                        if creatingBulkCategory {
+                            TextField("New category", text: $bulkCategory)
+                                .textFieldStyle(.roundedBorder)
+                        } else {
+                            Picker("Category", selection: $bulkCategory) {
+                                Text("Choose…").tag("")
+                                ForEach(model.assignableCategories, id: \.self) { Text($0).tag($0) }
+                            }
+                            .labelsHidden()
+                        }
+                        Button(creatingBulkCategory ? "Pick Existing" : "New…") {
+                            creatingBulkCategory.toggle()
+                            bulkCategory = ""
+                        }
+                        Button("Apply") { model.bulkSetCategory(bulkCategory) }
+                            .disabled(bulkCategory.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                    .padding(.vertical, 4)
+                }
+                Spacer(minLength: 0)
+                Button("Remove \(model.selectedInstalled.count) Installed…", role: .destructive) {
+                    model.confirmBulkRemove()
+                }
+                .foregroundStyle(.red)
+                .disabled(model.selectedInstalled.isEmpty)
+            }
+            Spacer(minLength: 0)
+        }
+        .controlSize(.small)
         .padding(Self.gutter)
     }
 
