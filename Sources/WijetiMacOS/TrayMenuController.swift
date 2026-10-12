@@ -2,12 +2,17 @@ import AppKit
 
 /// The menu-bar item, ported from `-[UBAppDelegate addStatusItemToMenu:]` plus the
 /// `showPreferences: / openWidgetDir: / visitWidgetGallery: / refreshWidgets:` actions.
-public final class TrayMenuController {
+public final class TrayMenuController: NSObject, NSMenuDelegate {
     private let host: HostApp
     private var statusItem: NSStatusItem?
     private var statusMenuItem: NSMenuItem?
     private var activeWidgetsMenuItem: NSMenuItem?
     private var activeWidgetsSubmenu: NSMenu?
+    private var messageMenuItem: NSMenuItem?
+    private var messageClearWork: DispatchWorkItem?
+    private var isMenuOpen = false
+    /// The (id, hidden) list the submenu was last built from; rebuilt only when it changes.
+    private var renderedWidgets: [String] = []
 
     public var onShowPreferences: (() -> Void)?
     public var onOpenLibrary: (() -> Void)?
@@ -15,6 +20,37 @@ public final class TrayMenuController {
 
     public init(host: HostApp) {
         self.host = host
+        super.init()
+    }
+
+    /// Server health shown at the top of the menu and as a dot on the status-item icon.
+    private enum Health {
+        case active(Int)
+        case reloading
+        case stopped
+
+        var label: String {
+            switch self {
+            case .active(let port): return "Active — port \(port)"
+            case .reloading: return "Reloading…"
+            case .stopped: return "Stopped"
+            }
+        }
+
+        var color: NSColor {
+            switch self {
+            case .active: return .systemGreen
+            case .reloading: return .systemOrange
+            case .stopped: return .systemRed
+            }
+        }
+    }
+
+    private var health: Health {
+        if let port = host.port { return .active(port) }
+        if host.supervisor.gaveUp { return .stopped }
+        if host.supervisor.isRunning || host.supervisor.restartScheduled { return .reloading }
+        return .stopped
     }
 
     public func install() {
@@ -44,14 +80,18 @@ public final class TrayMenuController {
         status.isEnabled = false
         menu.addItem(status)
         statusMenuItem = status
+        let message = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        message.isEnabled = false
+        message.isHidden = true
+        menu.addItem(message)
+        messageMenuItem = message
 
         // Active widgets submenu
         let activeWidgets = NSMenuItem(title: "Active Widgets", action: nil, keyEquivalent: "")
-        activeWidgets.isEnabled = false
         activeWidgetsSubmenu = NSMenu()
         activeWidgets.submenu = activeWidgetsSubmenu
         menu.addItem(activeWidgets)
-        refreshActiveWidgets()
+        activeWidgetsMenuItem = activeWidgets
 
         menu.addItem(.separator())
         // Deliberately no key equivalents: the status menu is only open after a click, so
@@ -68,14 +108,16 @@ public final class TrayMenuController {
         quit.keyEquivalent = "q"
         menu.addItem(quit)
 
+        menu.delegate = self
         item.menu = menu
+        refreshStatus()
         NSLog(
             "tray installed: %d menu item(s) [%@]",
             menu.numberOfItems,
             menu.items.map(\.title).filter { !$0.isEmpty }.joined(separator: ", ")
         )
         host.onStatus = { [weak self] message in
-            self?.statusMenuItem?.title = message
+            self?.showTransient(message)
         }
         // `host.onStateChange` is deliberately NOT set here. It is a single callback, so
         // claiming it from the menu would silently displace whoever set it first — which is
@@ -103,44 +145,83 @@ public final class TrayMenuController {
     }
 
     public func refreshStatus() {
-        statusMenuItem?.title = host.port.map { "Running on port \($0)" } ?? "Server not running"
+        let health = self.health
+        let line = NSMutableAttributedString(
+            string: "● ",
+            attributes: [.foregroundColor: health.color]
+        )
+        line.append(NSAttributedString(string: health.label))
+        statusMenuItem?.attributedTitle = line
+        statusItem?.button?.toolTip = "Wijeti — \(health.label)"
         refreshActiveWidgets()
     }
 
+    /// Shows a short-lived message under the health line, then clears it. Kept apart from the
+    /// health line so the 1 Hz refresh cannot wipe it within a second.
+    private func showTransient(_ message: String) {
+        messageMenuItem?.title = message
+        messageMenuItem?.isHidden = false
+        messageClearWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.messageMenuItem?.isHidden = true
+        }
+        messageClearWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
+    }
+
+    public func menuWillOpen(_ menu: NSMenu) {
+        isMenuOpen = true
+        refreshStatus()
+    }
+
+    public func menuDidClose(_ menu: NSMenu) {
+        isMenuOpen = false
+    }
+
+    /// Lists every installed widget with a check for the visible ones, so a hidden widget can
+    /// be shown again from here. Rebuilt only when the list changes and never while the menu
+    /// is open (replacing items under the cursor makes the menu flicker and drops clicks).
     private func refreshActiveWidgets() {
-        guard let submenu = activeWidgetsSubmenu else { return }
-        // Remove old widget items (keep the title item)
-        let itemsToRemove = submenu.items.filter { $0.action == #selector(toggleWidget(_:)) }
-        for item in itemsToRemove {
-            submenu.removeItem(item)
-        }
+        guard let submenu = activeWidgetsSubmenu, !isMenuOpen else { return }
+        let ids = host.widgetIDs
+        let signature = ids.map { "\($0):\(host.settings(for: $0).hidden)" }
+        guard signature != renderedWidgets else { return }
+        renderedWidgets = signature
 
-        let visibleWidgets = host.widgetIDs.filter { id in
-            let settings = host.settings(for: id)
-            return !settings.hidden
-        }
-
-        if visibleWidgets.isEmpty {
-            let empty = NSMenuItem(title: "No active widgets", action: nil, keyEquivalent: "")
+        submenu.removeAllItems()
+        if ids.isEmpty {
+            let empty = NSMenuItem(title: "No widgets installed", action: nil, keyEquivalent: "")
             empty.isEnabled = false
             submenu.addItem(empty)
-        } else {
-            for id in visibleWidgets {
-                let item = NSMenuItem(title: id, action: #selector(toggleWidget(_:)), keyEquivalent: "")
-                item.target = self
-                item.state = .on
-                submenu.addItem(item)
-            }
+            return
         }
+        for id in ids {
+            let item = NSMenuItem(title: Self.displayName(for: id), action: #selector(toggleWidget(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = id
+            item.state = host.settings(for: id).hidden ? .off : .on
+            submenu.addItem(item)
+        }
+    }
+
+    /// `liquid-glass-calendar-widget-index-jsx` → `liquid glass calendar`.
+    static func displayName(for id: String) -> String {
+        var name = id
+        for suffix in ["-index-jsx", "-index-js", "-index-coffee", "-jsx", "-js", "-coffee"] where name.hasSuffix(suffix) {
+            name = String(name.dropLast(suffix.count))
+            break
+        }
+        if name.hasSuffix("-widget") { name = String(name.dropLast("-widget".count)) }
+        return name.replacingOccurrences(of: "-", with: " ")
     }
 
     @objc private func toggleWidget(_ sender: NSMenuItem) {
         // Toggle visibility of the widget whose id matches the menu item title
-        let widgetID = sender.title
+        guard let widgetID = sender.representedObject as? String else { return }
         let currentSettings = host.settings(for: widgetID)
         host.updateSettings(widgetID) { $0.hidden = !currentSettings.hidden }
-        // Flip the menu item state
         sender.state = sender.state == .on ? .off : .on
+        renderedWidgets = []
     }
 
     @objc private func refreshAll() { host.refreshWidgets() }

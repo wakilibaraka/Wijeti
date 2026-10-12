@@ -146,13 +146,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tray.onOpenLibrary = { [weak self] in self?.library.show() }
         tray.onQuit = { NSApp.terminate(nil) }
         preferences.onOpenLibrary = { [weak self] in self?.library.show() }
-        host.onServerStopped = { [weak self] in self?.tray.refreshStatus() }
+        host.onServerStopped = { [weak self] in
+            self?.tray.refreshStatus()
+            self?.preferences.refreshIfVisible()
+        }
+        host.onServerStarted = { [weak self] _ in self?.tray.refreshStatus() }
         host.onStateChange = { [weak self] (fetched: WidgetStateResponse) in
             guard let self else { return }
             self.appliedState = true
             // The tray used to claim `onStateChange` for itself, which displaced this handler
             // entirely. Keeping the menu in sync is now this handler's job.
             self.tray.refreshStatus()
+            self.preferences.refreshIfVisible()
             // The library's contents come from the server, whose first state can land after
             // the window was already opened. Refresh it only while it is actually on screen.
             if self.library.window?.isVisible == true {
@@ -420,16 +425,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         library.show()
         preferences.show()
+        onboarding.show()
         NSLog("ui capture: windows shown, drawing in 3s")
         // Let the split view settle and the preview server come up before drawing.
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
             guard let self else { return }
             NSLog("ui capture: library chrome — %@", self.library.chromeSummary)
             NSLog("ui capture: settings chrome — %@", self.preferences.chromeSummary)
-            let captures: [(name: String, image: NSImage?)] = [
+            var captures: [(name: String, image: NSImage?)] = [
                 ("library-window.png", self.library.snapshotWindowImage()),
                 ("preferences-window.png", self.preferences.snapshotWindowImage()),
+                ("onboarding-window.png", self.onboarding.snapshotWindowImage()),
             ]
+            for tab in PreferencesModel.Tab.allCases where tab != .general {
+                self.preferences.select(tab: tab)
+                RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+                captures.append(("preferences-\(tab.rawValue).png", self.preferences.snapshotWindowImage()))
+            }
             var written = 0
             for capture in captures {
                 guard let image = capture.image else {

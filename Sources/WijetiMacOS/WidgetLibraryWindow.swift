@@ -11,7 +11,7 @@ import WijetiCore
 /// Nothing here is installed until the user taps Install, and the preview pane runs a
 /// private throwaway server so the real widget directory, settings and running server are
 /// never touched.
-public final class WidgetLibraryWindow: NSWindowController {
+public final class WidgetLibraryWindow: NSWindowController, NSWindowDelegate {
     /// The shared model that owns the catalog, the installed list, the preview controller,
     /// and the install/import/refresh actions.
     public var model: WidgetLibraryModel!
@@ -38,8 +38,16 @@ public final class WidgetLibraryWindow: NSWindowController {
         window.backgroundColor = .clear
         window.isReleasedWhenClosed = false
         super.init(window: window)
-        window.center()
+        window.delegate = self
         window.setContentSize(NSSize(width: 1180, height: 660))
+        window.center()
+    }
+
+    /// The red close button closes the `NSWindow` directly, bypassing `close()` above, so the
+    /// private preview server would otherwise keep running with the window hidden.
+    @MainActor
+    public func windowWillClose(_ notification: Notification) {
+        model.stopPreview()
     }
 
     /// Loads the model before the window is on screen, then seeds a selection so the preview
@@ -71,7 +79,7 @@ public final class WidgetLibraryWindow: NSWindowController {
     /// Keeps the same shape as the v1 `show()` so callers do not need to change.
     @MainActor
     public func show() {
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         showWindow(nil)
         model.resumePreview()
     }
@@ -203,7 +211,20 @@ public final class WidgetLibraryModel: ObservableObject {
     @Published public var catalogProblem: String?
     @Published public var search = ""
     @Published public var selectedCategory: String?
-    @Published public var status = ""
+    @Published public var status = "" {
+        didSet {
+            guard status != oldValue, !status.isEmpty else { return }
+            statusClearWork?.cancel()
+            let message = status
+            let work = DispatchWorkItem { [weak self] in
+                // Only clear the message that scheduled this; a newer one keeps its own timer.
+                if self?.status == message { self?.status = "" }
+            }
+            statusClearWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
+        }
+    }
+    private var statusClearWork: DispatchWorkItem?
     @Published public var busy = false
     /// Ids from the catalog that are already on disk, so their button reads "Installed".
     @Published public var installedPresetIDs: Set<String> = []
@@ -386,6 +407,17 @@ public final class WidgetLibraryModel: ObservableObject {
         }
     }
 
+    /// The running server's entry for a bundled preset. Server ids are derived from the path
+    /// (`Clock.widget` → `Clock-widget-index-jsx`), so the preset id has to go through the same
+    /// derivation before it can be matched.
+    public func installedWidget(for preset: Preset) -> Installed? {
+        let base = WidgetImporter.widgetID(
+            for: host.widgetDirectoryURL.appendingPathComponent(preset.id),
+            root: host.widgetDirectoryURL
+        )
+        return installed.first { $0.id == base || $0.id.hasPrefix(base + "-index-") }
+    }
+
     public func isInstalled(_ preset: Preset) -> Bool { installedPresetIDs.contains(preset.id) }
 
     /// Copies a bundled preset into the widget directory and reveals it.
@@ -473,7 +505,11 @@ public final class WidgetLibraryModel: ObservableObject {
     public func install(_ presets: [Preset]) {
         var installed = 0
         var failed: [String] = []
-        for preset in presets where !bundledPresetExists(preset.id) {
+        for preset in presets {
+            guard bundledPresetExists(preset.id) else {
+                failed.append(preset.title)
+                continue
+            }
             if let result = try? importer.importWidgets(at: [presetsDirectory.appendingPathComponent(preset.id)]),
                !result.installed.isEmpty {
                 installed += 1
@@ -489,29 +525,54 @@ public final class WidgetLibraryModel: ObservableObject {
         reload()
     }
 
-    // MARK: - Bring your own    /// Installs whatever the user dropped onto the window. Handles folders, .jsx/.js/.coffee
-    /// files, and .zip archives (extracted to a temp dir first).
+    // MARK: - Bring your own
+
+    /// Installs whatever the user dropped onto the window. Handles folders, .jsx/.js/.coffee
+    /// files, and .zip archives (unpacked off the main thread into a scratch directory first).
     public func importDropped(_ urls: [URL]) {
         let usable = urls.filter { importer.canImport($0) || $0.pathExtension.lowercased() == "zip" }
         guard !usable.isEmpty else {
             status = "Drop a widget folder, a .jsx / .coffee / .js file, or a .zip archive."
             return
         }
-        do {
-            var allURLs: [URL] = []
-            for url in usable {
-                if url.pathExtension.lowercased() == "zip" {
-                    if let extracted = try? extractZip(url) {
-                        allURLs.append(contentsOf: extracted)
-                    } else {
-                        status = "Could not extract \(url.lastPathComponent)."
-                        return
-                    }
-                } else {
-                    allURLs.append(url)
+        let zips = usable.filter { $0.pathExtension.lowercased() == "zip" }
+        let direct = usable.filter { $0.pathExtension.lowercased() != "zip" }
+        guard !zips.isEmpty else {
+            finishImport(direct, scratch: [])
+            return
+        }
+        status = "Unpacking…"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var extracted: [URL] = []
+            var scratch: [URL] = []
+            var failure: String?
+            for zip in zips {
+                let directory = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("Wijeti-Zip-\(UUID().uuidString)", isDirectory: true)
+                scratch.append(directory)
+                do {
+                    extracted += try WidgetArchive().extract(zip, into: directory)
+                } catch {
+                    failure = "\(zip.lastPathComponent): \(error.localizedDescription)"
+                    break
                 }
             }
-            let result = try importer.importWidgets(at: allURLs)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let failure {
+                    scratch.forEach { try? FileManager.default.removeItem(at: $0) }
+                    self.status = "Could not install \(failure)"
+                    return
+                }
+                self.finishImport(direct + extracted, scratch: scratch)
+            }
+        }
+    }
+
+    private func finishImport(_ urls: [URL], scratch: [URL]) {
+        defer { scratch.forEach { try? FileManager.default.removeItem(at: $0) } }
+        do {
+            let result = try importer.importWidgets(at: urls)
             var parts: [String] = []
             if !result.installed.isEmpty {
                 parts.append("Installed \(result.installed.count)")
@@ -525,35 +586,6 @@ public final class WidgetLibraryModel: ObservableObject {
         } catch {
             status = "Import failed: \(error.localizedDescription)"
         }
-    }
-
-    /// Extracts a .zip archive to a temp directory and returns the paths of its contents.
-    private func extractZip(_ zipURL: URL) throws -> [URL] {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Wijeti-Zip-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-        process.arguments = ["-o", zipURL.path, "-d", tempDir.path]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        try process.run()
-        process.waitUntilExit()
-        if process.terminationStatus != 0 {
-            throw NSError(domain: "WijetiZip", code: Int(process.terminationStatus),
-                          userInfo: [NSLocalizedDescriptionKey: "unzip failed"])
-        }
-        let contents = (try? FileManager.default.contentsOfDirectory(atPath: tempDir.path)) ?? []
-        // If the zip contained a single top-level folder, use its contents directly.
-        if contents.count == 1,
-           let first = contents.first(where: { name in
-               var isDir: ObjCBool = false
-               return FileManager.default.fileExists(atPath: tempDir.appendingPathComponent(name).path, isDirectory: &isDir) && isDir.boolValue
-           }) {
-            return [tempDir.appendingPathComponent(first)]
-        }
-        return contents.map { tempDir.appendingPathComponent($0) }
     }
 
     /// Opens a panel so the user can pick a folder or a bare widget file.
@@ -596,17 +628,6 @@ public final class WidgetLibraryModel: ObservableObject {
     /// Hides every installed widget now.
     public func disableAllNow() {
         host.disableAllNow()
-        reload()
-    }
-
-    /// Flips every installed widget: if anything is visible, hide them all; otherwise show
-    /// them all. "Show everything" is the only useful meaning of a toggle from all-hidden.
-    public func toggleAllNow() {
-        if installed.contains(where: \.visible) {
-            host.disableAllNow()
-        } else {
-            host.enableAllVisibleNow()
-        }
         reload()
     }
 
@@ -747,24 +768,33 @@ struct WidgetLibraryView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 1040, minHeight: 560)
-        .toolbar {
-            // Bulk visibility belongs in the toolbar, not in the list: it is a window-wide
-            // action on the installed set rather than something about the selected widget.
-            ToolbarItemGroup(placement: .primaryAction) {
-                Text(model.status.isEmpty ? "\(model.visibleCount) of \(model.installed.count) visible" : model.status)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Button("Show All") { model.enableAllVisibleNow() }
-                    .help("Make every installed widget visible")
-                    .disabled(model.installed.isEmpty)
-                Button("Hide All") { model.disableAllNow() }
-                    .help("Hide every installed widget — they stay installed")
-                    .disabled(model.installed.isEmpty)
-            }
-        }
         .onDrop(of: [.fileURL], isTargeted: $model.isDropTargeted) { providers in
             handleDrop(providers)
         }
+        .overlay {
+            if model.isDropTargeted {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(Color.accentColor.opacity(0.12))
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [10, 6]))
+                    VStack(spacing: 8) {
+                        Image(systemName: "arrow.down.doc.fill")
+                            .font(.system(size: 40))
+                        Text("Drop to install")
+                            .font(.title3.weight(.semibold))
+                        Text("Folders, .zip, .jsx and .js files")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .foregroundStyle(Color.accentColor)
+                }
+                .padding(8)
+                .allowsHitTesting(false)
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: model.isDropTargeted)
     }
 
     // MARK: - Source list
@@ -809,6 +839,8 @@ struct WidgetLibraryView: View {
         // The list paints its own opaque background by default, which would hide the
         // material underneath it.
         .scrollContentBackground(.hidden)
+        // Keep the first row clear of the traffic lights (the title bar is transparent).
+        .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: 28) }
         .background(VisualEffectView(material: .sidebar))
     }
 
@@ -938,8 +970,20 @@ struct WidgetLibraryView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Text("\(model.visibleCount) of \(model.installed.count) visible")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Button("Show All") { model.enableAllVisibleNow() }
+                    .controlSize(.small)
+                    .help("Make every installed widget visible")
+                    .disabled(model.installed.isEmpty)
+                Button("Hide All") { model.disableAllNow() }
+                    .controlSize(.small)
+                    .help("Hide every installed widget; they stay installed")
+                    .disabled(model.installed.isEmpty)
                 Button("Install Your Own…") { model.chooseFilesToImport() }
                     .controlSize(.small)
+                    .buttonStyle(.borderedProminent)
             }
             .padding(.horizontal, 16)
             .padding(.top, 14)
@@ -967,7 +1011,9 @@ struct WidgetLibraryView: View {
                     .fill(Color(nsColor: .controlBackgroundColor))
             )
             .padding(.horizontal, 16)
-            .padding(.bottom, 10)
+            .padding(.bottom, 8)
+
+            categoryChips
 
             // Content: the catalog, filtered by whatever the source list selected. The
             // installed list lives in the sidebar, so nothing is listed twice.
@@ -1018,6 +1064,39 @@ struct WidgetLibraryView: View {
         // The window is transparent so the sidebar can sample the desktop, so the content
         // pane has to paint its own background.
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    /// Quick category filters, mirroring the sidebar selection (one shared piece of state).
+    private var categoryChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                chip("All", selected: model.selectedCategory == nil && !model.showRecentFirst) {
+                    model.selectedCategory = nil
+                    model.showRecentFirst = false
+                }
+                ForEach(model.categories, id: \.self) { category in
+                    chip(category, selected: model.selectedCategory == category) {
+                        model.selectedCategory = category
+                        model.showRecentFirst = false
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .padding(.bottom, 10)
+    }
+
+    private func chip(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(selected ? Color.accentColor : Color.secondary.opacity(0.14)))
+                .foregroundStyle(selected ? Color.white : Color.primary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     /// What the source list has selected, as a title for the content pane header.
@@ -1117,6 +1196,10 @@ struct WidgetLibraryView: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
+                if installed, let widget = model.installedWidget(for: preset) {
+                    widgetSwitches(widget)
+                        .padding(.top, 4)
+                }
             }
             Spacer(minLength: 8)
             if installed {
@@ -1151,6 +1234,29 @@ struct WidgetLibraryView: View {
         .contentShape(Rectangle())
         .onTapGesture { model.select(preset) }
         .help("Preview \(preset.title)")
+    }
+
+    /// The three per-widget switches the library promises: visibility, window level and screens.
+    private func widgetSwitches(_ widget: WidgetLibraryModel.Installed) -> some View {
+        HStack(spacing: 14) {
+            Toggle("Visible", isOn: Binding(
+                get: { widget.visible },
+                set: { model.setVisible($0, for: widget.id) }
+            ))
+            Toggle("Behind", isOn: Binding(
+                get: { widget.inBackground },
+                set: { model.setInBackground($0, for: widget.id) }
+            ))
+            Toggle("All screens", isOn: Binding(
+                get: { widget.onAllScreens },
+                set: { model.setOnAllScreens($0, for: widget.id) }
+            ))
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .fixedSize()
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 
     // MARK: - Preview pane (wide)
@@ -1200,7 +1306,7 @@ struct WidgetLibraryView: View {
 
                                 // Disable = hide without deleting.
                                 Button {
-                                    if let widget = model.installed.first(where: { $0.id == preset.id }),
+                                    if let widget = model.installedWidget(for: preset),
                                        widget.visible {
                                         model.confirmDisable(widget)
                                     }

@@ -20,18 +20,22 @@ public final class PreferencesModel: ObservableObject {
     @Published public var status: String = ""
 
     public enum Tab: String, CaseIterable, Identifiable {
-        case widgets, general, permissions
+        case general, widgets, permissions, advanced
         public var id: String { rawValue }
         public var title: String {
             switch self {
-            case .widgets: return "Widgets"
             case .general: return "General"
+            case .widgets: return "Widgets"
             case .permissions: return "Permissions"
+            case .advanced: return "Advanced"
             }
         }
     }
 
-    @Published public var selectedTab: Tab = .widgets
+    @Published public var selectedTab: Tab = .general
+    @Published public var developerMode: Bool = DeveloperMode.isEnabled
+    @Published public var serverStatus: String = ""
+    @Published public var serverHealthy: Bool = false
 
     private let host: HostApp
 
@@ -53,6 +57,24 @@ public final class PreferencesModel: ObservableObject {
             )
         }
         widgetDirectory = host.widgetDirectoryURL.path
+        loginShell = host.loginShell
+        launchAtLogin = LoginItem.isEnabled
+        developerMode = DeveloperMode.isEnabled
+        if let port = host.port {
+            serverStatus = "Running on port \(port)"
+            serverHealthy = true
+        } else {
+            serverHealthy = false
+            serverStatus = host.supervisor.gaveUp
+                ? "Stopped — it kept failing to start. Try Restart Server."
+                : (host.supervisor.isRunning || host.supervisor.restartScheduled ? "Starting…" : "Not running")
+        }
+    }
+
+    public func setDeveloperMode(_ enabled: Bool) {
+        developerMode = enabled
+        UserDefaults.standard.set(enabled, forKey: DeveloperMode.defaultsKey)
+        host.coordinator.setInspectable(enabled)
     }
 
     public func setHidden(_ hidden: Bool, for id: String) {
@@ -118,10 +140,11 @@ struct WidgetSettingsView: View {
             Divider()
             Group {
                 switch model.selectedTab {
-                case .widgets: widgetsTab
                 case .general: generalTab
+                case .widgets: widgetsTab
                 case .permissions:
                     PermissionsView(probe: probe, sources: sources)
+                case .advanced: advancedTab
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -171,7 +194,7 @@ struct WidgetSettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 280)
+                .frame(width: 360)
             }
             .padding(.horizontal, 20)
             .padding(.top, 16)
@@ -270,11 +293,69 @@ struct WidgetSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 insetGroupedSection(
+                    badge: "person.badge.key",
+                    badgeColor: .purple,
+                    title: "Launch at login",
+                    subtitle: "Start Wijeti when you log in.",
+                    footer: model.status.isEmpty ? "Wijeti lives in the menu bar and never appears in the Dock." : model.status
+                ) {
+                    Toggle("Start Wijeti at login", isOn: Binding(
+                        get: { model.launchAtLogin },
+                        set: { model.setLaunchAtLogin($0) }
+                    ))
+                    .padding(.vertical, 4)
+                }
+                .padding(.bottom, 10)
+
+                insetGroupedSection(
+                    badge: "square.grid.2x2",
+                    badgeColor: .blue,
+                    title: "Widgets",
+                    subtitle: "Browse, install and manage widgets.",
+                    footer: "Shortcuts: ⌘L opens the library, ⌘, opens Settings."
+                ) {
+                    HStack(spacing: 10) {
+                        Button("Open Widget Library…", action: onOpenLibrary)
+                            .buttonStyle(.borderedProminent)
+                        Button("Refresh All") { model.refreshAll() }
+                            .buttonStyle(.bordered)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+        }
+    }
+
+    // MARK: - Advanced tab
+
+    private var advancedTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                insetGroupedSection(
+                    badge: "server.rack",
+                    badgeColor: model.serverHealthy ? .green : .red,
+                    title: "Widget engine",
+                    subtitle: model.serverStatus,
+                    footer: "The bundled Node server that runs your widgets. It restarts itself if it crashes."
+                ) {
+                    HStack(spacing: 10) {
+                        Button("Restart Server") { model.restartServer() }
+                            .buttonStyle(.bordered)
+                        Button("Reload Widgets") { model.reloadWidgets() }
+                            .buttonStyle(.bordered)
+                    }
+                    .padding(.vertical, 4)
+                }
+                .padding(.bottom, 10)
+
+                insetGroupedSection(
                     badge: "folder",
                     badgeColor: .gray,
                     title: "Widgets folder",
                     subtitle: model.widgetDirectory,
-                    footer: "Choose a folder or reveal it in Finder. Changing the folder requires a restart."
+                    footer: "Changing the folder restarts the server. Widgets in the old folder are left where they are."
                 ) {
                     HStack(spacing: 10) {
                         Button("Choose…") { model.chooseWidgetDirectory() }
@@ -282,6 +363,7 @@ struct WidgetSettingsView: View {
                         Button("Reveal in Finder") { model.revealWidgetDirectory() }
                             .buttonStyle(.bordered)
                     }
+                    .padding(.vertical, 4)
                 }
                 .padding(.bottom, 10)
 
@@ -290,47 +372,32 @@ struct WidgetSettingsView: View {
                     badgeColor: .orange,
                     title: "Login shell",
                     subtitle: "Run widget commands through your shell profile.",
-                    footer: "Some widgets need your shell profile for PATH and aliases. Turning this on restarts the widget server."
+                    footer: "Some widgets need your PATH and aliases. Turning this on restarts the server."
                 ) {
                     Toggle("Run commands through a login shell", isOn: Binding(
                         get: { model.loginShell },
                         set: { model.setLoginShell($0) }
                     ))
+                    .padding(.vertical, 4)
                 }
                 .padding(.bottom, 10)
 
                 insetGroupedSection(
-                    badge: "person.badge.key",
-                    badgeColor: .purple,
-                    title: "Launch at login",
-                    subtitle: "Start Wijeti when you log in.",
-                    footer: nil
+                    badge: "hammer",
+                    badgeColor: .teal,
+                    title: "Developer mode",
+                    subtitle: "Inspect widgets with Safari’s Web Inspector.",
+                    footer: "Enable Safari → Settings → Advanced → Show features for web developers, then choose Develop → this Mac."
                 ) {
-                    Toggle("Start Wijeti at login", isOn: Binding(
-                        get: { model.launchAtLogin },
-                        set: { model.setLaunchAtLogin($0) }
+                    Toggle("Make widgets inspectable", isOn: Binding(
+                        get: { model.developerMode },
+                        set: { model.setDeveloperMode($0) }
                     ))
-                }
-                .padding(.bottom, 10)
-
-                insetGroupedSection(
-                    badge: "arrow.clockwise",
-                    badgeColor: .blue,
-                    title: "Refresh and reload",
-                    subtitle: "Force a refresh, reload all widgets, or restart the server.",
-                    footer: nil
-                ) {
-                    HStack(spacing: 10) {
-                        Button("Refresh All") { model.refreshAll() }
-                            .buttonStyle(.bordered)
-                        Button("Reload Widgets") { model.reloadWidgets() }
-                            .buttonStyle(.bordered)
-                        Button("Restart Server") { model.restartServer() }
-                            .buttonStyle(.bordered)
-                    }
+                    .padding(.vertical, 4)
                 }
             }
             .padding(.horizontal, 20)
+            .padding(.top, 12)
         }
     }
 }
@@ -497,13 +564,26 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate {
         }
         model.reload()
         probe.refresh()
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         window?.makeKeyAndOrderFront(nil)
         NSLog("preferences window shown with %d widget(s)", model.rows.count)
     }
 
     /// Renders the settings window to an image — `--capture-ui` uses this to prove the
     /// chrome rules (modeless, close-only) actually took effect on the real window.
+    /// Re-reads server state into the form while the window is on screen, so toggles flipped in
+    /// the tray or by AppleScript do not leave it stale.
+    @MainActor
+    public func refreshIfVisible() {
+        guard window?.isVisible == true else { return }
+        model.reload()
+    }
+
+    @MainActor
+    public func select(tab: PreferencesModel.Tab) {
+        model.selectedTab = tab
+    }
+
     @MainActor
     public func snapshotWindowImage() -> NSImage? {
         WindowSnapshot.capture(window)
