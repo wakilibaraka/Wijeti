@@ -36,10 +36,13 @@ struct Options {
                 serverDirectory = URL(fileURLWithPath: value!)
                 consumedValue = true
             case "--presets-dir" where value != nil:
-                presetsDirectory = URL(fileURLWithPath: value!)
+                // Canonical for the same reason the widget directory is: this path is the root
+                // the preview server derives widget ids against, so a symlinked library would
+                // preview under a different id than the library lists it under.
+                presetsDirectory = URL(fileURLWithPath: value!).canonicalPathURL
                 consumedValue = true
             case "--widgets" where value != nil:
-                widgetDirectory = URL(fileURLWithPath: value!)
+                widgetDirectory = URL(fileURLWithPath: value!).canonicalPathURL
                 consumedValue = true
             case "--settings" where value != nil:
                 settingsDirectory = URL(fileURLWithPath: value!)
@@ -178,7 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installSignalHandler()
 
         // `--install-presets` is the scriptable equivalent of the tray item's
-        // "Install Presets…": copy the bundled presets and quit.
+        // "Install Bundled Widgets": copy the bundled presets and quit.
         if options.installPresets {
             host.installPresets()
             NSApp.terminate(nil)
@@ -188,6 +191,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installMainMenu()
         tray.install()
         NSLog("Wijeti starting; widgets: %@", host.widgetDirectoryURL.path)
+        // The library is only as good as this path: if it resolves somewhere without a
+        // Catalog.json the window opens empty, which is indistinguishable from "no bundled
+        // widgets" unless the resolved path and count are on the record.
+        NSLog(
+            "widget library: %@ (%d bundled preset(s))",
+            host.platform.presetsDirectory.path,
+            PresetCatalog.load(from: host.platform.presetsDirectory).presets.count
+        )
         NSLog(
             "options: snapshotDir=%@ exitAfterSnapshot=%@ captureUI=%@",
             options.snapshotDirectory?.path ?? "-",
@@ -199,6 +210,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // First-launch onboarding, before anything else. It is the intro surface, so it
         // should be the first thing the user sees, and it clears itself on dismiss.
         onboarding.show()
+
+        // First launch only. The onboarding guard is the completion flag, which is only written
+        // on dismiss — so at this point "onboarding is on screen" and "the flag is unset" are
+        // the same question.
+        if !UserDefaults.standard.bool(forKey: OnboardingWindowController.didCompleteKey) {
+            tray.pulseIcon()
+        }
 
         // `--capture-ui` is a one-shot dev flag: show both windows, draw them to PNGs, exit.
         // It takes precedence over `--show-library`, which it implies.
@@ -319,6 +337,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action: #selector(showLibrary(_:)),
             keyEquivalent: "l"
         )
+        widgetsMenu.addItem(
+            withTitle: "Open Widgets Folder",
+            action: #selector(openWidgetFolder(_:)),
+            keyEquivalent: "o"
+        )
         widgetsMenu.addItem(.separator())
         addMenuItem(
             to: widgetsMenu,
@@ -379,6 +402,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // ends here at the app delegate — the same route the status menu already relies on.
     @objc private func showPreferences(_ sender: Any?) { preferences.show() }
     @objc private func showLibrary(_ sender: Any?) { library.show() }
+    @objc private func openWidgetFolder(_ sender: Any?) { host.revealWidgetDirectory() }
     @objc private func closeKeyWindow(_ sender: Any?) { NSApp.keyWindow?.performClose(nil) }
     @objc private func refreshAllWidgets(_ sender: Any?) { host.refreshWidgets() }
     @objc private func reloadAllWidgets(_ sender: Any?) { host.reloadWidgets() }

@@ -34,6 +34,9 @@ public final class TrayMenuController {
         menu.addItem(reloadWidgets)
         menu.addItem(.separator())
         menu.addItem(makeMenuItem("Open Widgets Folder", #selector(openWidgetFolder)))
+        // `HostApp.installPresets()` was previously reachable only from the `--install-presets`
+        // launch flag, so the feature existed but no user could find it.
+        menu.addItem(makeMenuItem("Install Bundled Widgets", #selector(installBundledWidgets)))
         menu.addItem(makeMenuItem("Visit Widget Gallery", #selector(visitGallery)))
         menu.addItem(.separator())
 
@@ -81,6 +84,24 @@ public final class TrayMenuController {
         // `refreshStatus()` from its own handler instead, so both run.
     }
 
+    /// Draws attention to the menu-bar icon on first launch.
+    ///
+    /// There is no API to animate or point at a status item, so this dims and restores the
+    /// glyph a few times — the one affordance available. Deliberately brief: a menu bar icon
+    /// that kept blinking would be worse than the problem it solves.
+    public func pulseIcon(times: Int = 3) {
+        guard let button = statusItem?.button else { return }
+        let step: TimeInterval = 0.35
+        for index in 0..<(times * 2) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + step * Double(index)) {
+                button.appearsDisabled = index % 2 == 0
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + step * Double(times * 2)) {
+            button.appearsDisabled = false
+        }
+    }
+
     public func refreshStatus() {
         statusMenuItem?.title = host.port.map { "Running on port \($0)" } ?? "Server not running"
         refreshActiveWidgets()
@@ -125,6 +146,7 @@ public final class TrayMenuController {
     @objc private func refreshAll() { host.refreshWidgets() }
     @objc private func reloadWidgets() { host.reloadWidgets() }
     @objc private func openWidgetFolder() { host.revealWidgetDirectory() }
+    @objc private func installBundledWidgets() { host.installPresets() }
     @objc private func openLibrary() { onOpenLibrary?() }
     @objc private func visitGallery() { host.visitGallery() }
     @objc private func showPreferences() { onShowPreferences?() }

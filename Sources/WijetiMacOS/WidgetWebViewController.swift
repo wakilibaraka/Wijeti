@@ -39,7 +39,17 @@ final class WidgetWebViewController: NSObject, WKScriptMessageHandler, WKNavigat
         )
 
         webView.navigationDelegate = self
+        // A transparent web view is what lets widgets float on the wallpaper, and macOS offers
+        // no public API for it. `underPageBackgroundColor` is *not* a substitute — it only
+        // paints the area behind the page, and substituting it here was measured leaving the
+        // widget layer 100% opaque, which would put an opaque sheet over the desktop. The
+        // private key is therefore used deliberately, and the supported property is set too
+        // for the overscroll area.
+        //
+        // This is verified rather than assumed: `--snapshot-dir` writes the composited widget
+        // layer as a PNG, and its transparent fraction is the regression check for this line.
         webView.setValue(false, forKey: "drawsBackground")
+        webView.underPageBackgroundColor = .clear
         // A widget that throws leaves a blank, transparent window with nothing to read in
         // the log. Surfacing the message in the title means `page probe` below reports it.
         controller.addUserScript(WKUserScript(
@@ -98,12 +108,18 @@ final class WidgetWebViewController: NSObject, WKScriptMessageHandler, WKNavigat
         // `readyState|childNodes|htmlLength|title`. A child count of 0 means the widget client
         // received no widgets — the server could not bundle them, or no widget is visible on
         // this screen/layer.
+        // The trailing field is the only way to see, from a log, whether the widget page is
+        // actually being told the system is in dark mode — which is what widget CSS keys off
+        // via `prefers-color-scheme`, and which there is no other way to assert.
         webView.evaluateJavaScript(
             "[document.readyState, document.body ? document.body.children.length : -1,"
-                + " document.body ? document.body.innerHTML.length : -1, document.title].join('|')"
+                + " document.body ? document.body.innerHTML.length : -1, document.title,"
+                + " window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light']"
+                + ".join('|')"
         ) { value, error in
             // NSLog's C variadics are unavailable inside this escaping closure; interpolate.
-            NSLog("%@", "page probe: \(value ?? "nil") \(error?.localizedDescription ?? "")")
+            let appearance = NSApp.effectiveAppearance.name.rawValue
+            NSLog("%@", "page probe: \(value ?? "nil") appearance=\(appearance) \(error?.localizedDescription ?? "")")
         }
         onLoadFinished?()
     }

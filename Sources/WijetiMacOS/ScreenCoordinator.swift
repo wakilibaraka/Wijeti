@@ -38,6 +38,10 @@ public final class ScreenCoordinator {
     private let openExternal: (URL) -> Void
     private var windows: [String: WidgetWindow] = [:]
     private var lastPort: Int?
+    /// Signature of the last applied screen layout, so a state poll that changes nothing can
+    /// be ignored. See `apply(port:)`.
+    private var lastLayout: [CGRect] = []
+    private var lastPortApplied: Int?
     private var screenObserver: NSObjectProtocol?
 
     public init(argvPath: String, openExternal: @escaping (URL) -> Void) {
@@ -64,8 +68,19 @@ public final class ScreenCoordinator {
         apply(port: port)
     }
 
+    /// Reconciles the desktop windows with the current screens and layers.
+    ///
+    /// This is driven by the 1 Hz state poll, but its only inputs are the screen layout and the
+    /// server port — `coordinator.apply(state:port:)` ignores the state entirely. Framing,
+    /// ordering and re-compositing two screen-sized transparent surfaces every single second
+    /// was therefore pure waste, and re-fronting the windows on a timer can fight the user’s
+    /// own window ordering. A changed layout or port is what actually requires the work.
     private func apply(port: Int) {
         let screens = NSScreen.screens
+        let layout = screens.map(\.frame)
+        guard layout != lastLayout || port != lastPortApplied else { return }
+        lastLayout = layout
+        lastPortApplied = port
         var wanted: [String: WidgetWindow] = [:]
 
         for (index, screen) in screens.enumerated() {
@@ -74,7 +89,10 @@ public final class ScreenCoordinator {
                 let key = "\(screenID)-\(layer.rawValue)"
                 let entry: WidgetWindow
                 if let existing = windows[key] {
-                    existing.window.setFrame(screen.frame, display: true)
+                    // Only redraw when the geometry actually moved.
+                    if existing.window.frame != screen.frame {
+                        existing.window.setFrame(screen.frame, display: true)
+                    }
                     entry = existing
                 } else {
                     let window = DesktopWindow(frame: screen.frame)
@@ -94,8 +112,9 @@ public final class ScreenCoordinator {
                         window: window,
                         controller: controller
                     )
+                    // A new window has to be ordered in; an existing one already is.
+                    window.orderFrontRegardless()
                 }
-                entry.window.orderFrontRegardless()
                 wanted[key] = entry
             }
         }
@@ -122,6 +141,8 @@ public final class ScreenCoordinator {
     /// change, matching `-[UBWindowsController redraw]`.
     public func refresh() {
         guard let lastPort else { return }
+        // Forget what was applied so the full pass runs even though the layout is unchanged.
+        lastLayout = []
         apply(port: lastPort)
         for entry in windows.values {
             entry.controller.forceRedraw()

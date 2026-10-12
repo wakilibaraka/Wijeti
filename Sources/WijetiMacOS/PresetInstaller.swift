@@ -19,10 +19,13 @@ public enum PresetInstaller {
             .sorted()
     }
 
+    /// `only` restricts the copy to a named subset — used for the first-launch starter widget,
+    /// where copying the whole library onto a brand-new desktop would be a poor greeting.
     @discardableResult
     public static func install(
         from presetsDirectory: URL,
-        to widgetDirectory: URL
+        to widgetDirectory: URL,
+        only names: [String]? = nil
     ) throws -> Result {
         var installed: [String] = []
         var skipped: [String] = []
@@ -32,7 +35,12 @@ public enum PresetInstaller {
         }
         try FileManager.default.createDirectory(at: widgetDirectory, withIntermediateDirectories: true)
 
-        for name in entries(in: presetsDirectory) {
+        var candidates = entries(in: presetsDirectory)
+        if let names {
+            candidates = candidates.filter { names.contains($0) }
+        }
+
+        for name in candidates {
             let destination = widgetDirectory.appendingPathComponent(name)
             if FileManager.default.fileExists(atPath: destination.path) {
                 skipped.append(name)

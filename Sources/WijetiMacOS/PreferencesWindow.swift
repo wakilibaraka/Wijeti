@@ -1,5 +1,4 @@
 import AppKit
-import ServiceManagement
 import SwiftUI
 import WijetiCore
 
@@ -17,7 +16,7 @@ public final class PreferencesModel: ObservableObject {
     @Published public var rows: [WidgetRow] = []
     @Published public var widgetDirectory: String = ""
     @Published public var loginShell: Bool = false
-    @Published public var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
+    @Published public var launchAtLogin: Bool = LoginItem.isEnabled
     @Published public var status: String = ""
 
     public enum Tab: String, CaseIterable, Identifiable {
@@ -88,8 +87,10 @@ public final class PreferencesModel: ObservableObject {
         panel.directoryURL = host.widgetDirectoryURL
         panel.prompt = "Use Folder"
         guard panel.runModal() == .OK, let chosen = panel.url else { return }
-        status = "Restart Wijeti to use \(chosen.lastPathComponent)"
-        NSLog("widget directory chosen: %@ (restart required)", chosen.path)
+        // The choice used to be discarded with a note telling the user to relaunch by hand,
+        // which meant picking a folder did nothing at all. Persist it and restart the server.
+        host.setWidgetDirectory(chosen)
+        reload()
     }
 
     public func setLoginShell(_ enabled: Bool) {
@@ -98,19 +99,9 @@ public final class PreferencesModel: ObservableObject {
     }
 
     public func setLaunchAtLogin(_ enabled: Bool) {
-        do {
-            if enabled {
-                if SMAppService.mainApp.status == .requiresApproval {
-                    try SMAppService.openSystemSettingsLoginItems()
-                } else {
-                    try SMAppService.mainApp.register()
-                }
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
-            launchAtLogin = SMAppService.mainApp.status == .enabled
-        } catch {
-            status = "Login item error: \(error.localizedDescription)"
+        launchAtLogin = LoginItem.setEnabled(enabled)
+        if enabled && !launchAtLogin {
+            status = "Approve Wijeti in System Settings → General → Login Items."
         }
     }
 }
@@ -155,7 +146,8 @@ struct WidgetSettingsView: View {
 
     // MARK: - Header
 
-    private var header: some View {            HStack {
+    private var header: some View {
+        HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
                         Image(systemName: "gear")
@@ -217,7 +209,8 @@ struct WidgetSettingsView: View {
                     subtitle: "Browse bundled widgets or install your own.",
                     footer: nil
                 ) {
-                    Button("Open Widget Library…", action: onOpenLibrary)                            .buttonStyle(.borderedProminent)
+                    Button("Open Widget Library…", action: onOpenLibrary)
+                        .buttonStyle(.borderedProminent)
                         .controlSize(.small)
                         .keyboardShortcut("i", modifiers: .command)
                 }

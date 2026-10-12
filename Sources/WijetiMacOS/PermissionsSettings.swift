@@ -235,17 +235,26 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
         return parts.joined(separator: ", ")
     }
 
-    func locationManager(
+    // The conformance is `nonisolated` because `CLLocationManagerDelegate` is: declaring these
+    // without it made the whole conformance cross into main-actor code, which the compiler
+    // flags as a data race and which becomes an error under the Swift 6 language mode. Each
+    // callback hops back explicitly instead.
+    nonisolated func locationManager(
         _ manager: CLLocationManager,
         didUpdateLocations locations: [CLLocation]
     ) {
-        continuation?.resume(returning: locations.last)
-        continuation = nil
+        let latest = locations.last
+        Task { @MainActor in
+            self.continuation?.resume(returning: latest)
+            self.continuation = nil
+        }
     }
 
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        continuation?.resume(returning: nil)
-        continuation = nil
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        Task { @MainActor in
+            self.continuation?.resume(returning: nil)
+            self.continuation = nil
+        }
     }
 
 }

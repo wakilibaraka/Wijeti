@@ -46,12 +46,24 @@ public final class HostSocket {
         let task = session.webSocketTask(with: request)
         self.task = task
         task.resume()
+        receiveNext()
+    }
+
+    /// Drains the socket for as long as it is open.
+    ///
+    /// The server broadcasts settings changes and refresh requests to every connected client,
+    /// so this stream runs continuously and is not a read-one-message pattern. The previous
+    /// version registered a single extra `receive` and then treated *its* completion as a
+    /// failure whatever the result, which tore the connection down and rebuilt it after
+    /// roughly two messages — silently dropping sends and reconnecting in a loop forever.
+    private func receiveNext() {
+        guard let task else { return }
         task.receive { [weak self] result in
             guard let self else { return }
             switch result {
             case .success:
                 self.reconnectAttempts = 0
-                self.task?.receive { _ in self.scheduleReconnect() }
+                self.receiveNext()
             case .failure:
                 self.scheduleReconnect()
             }

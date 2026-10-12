@@ -191,6 +191,11 @@ struct OnboardingView: View {
     let host: HostApp
     let onDismiss: () -> Void
     @StateObject private var viewModel = OnboardingViewModel()
+    /// Asked for here as well as in Settings: onboarding is the one moment the user is actually
+    /// thinking about setup, and "launch at login" is the difference between the widgets being
+    /// there tomorrow and not.
+    @State private var launchAtLogin = LoginItem.isEnabled
+    @State private var needsLoginItemApproval = false
 
     private var steps: [OnboardingStep] {
 
@@ -312,10 +317,58 @@ struct OnboardingView: View {
 
                 OnboardingPermissionsView()
                     .padding(.horizontal, 22)
+
+                loginItemCard
+                    .padding(.horizontal, 22)
             }
             .padding(.bottom, 16)
         }
         .frame(maxHeight: .infinity)
+    }
+
+    /// The login item, plus the one sentence that tells a new user where the app actually lives
+    /// once this window is closed.
+    private var loginItemCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Run in the background")
+                .font(.callout.weight(.medium))
+
+            Toggle("Launch Wijeti at login", isOn: $launchAtLogin)
+                .onChange(of: launchAtLogin) { _, wanted in
+                    let achieved = LoginItem.setEnabled(wanted)
+                    if wanted && !achieved {
+                        // macOS parks this for manual approval; say so rather than letting the
+                        // switch appear to do nothing.
+                        needsLoginItemApproval = true
+                    }
+                    if achieved != wanted {
+                        launchAtLogin = achieved
+                    }
+                }
+
+            if needsLoginItemApproval && !launchAtLogin {
+                Text("Approve Wijeti in System Settings → General → Login Items.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text("Wijeti keeps out of the Dock either way — the menu bar icon is where it lives, "
+                 + "and the pulsing icon in your menu bar is it saying hello.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
+        )
     }
 
     private var footer: some View {

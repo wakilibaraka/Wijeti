@@ -78,20 +78,30 @@ final class GeolocationBridge: NSObject, WKScriptMessageHandler, CLLocationManag
         pending.webView?.evaluateJavaScript("__UBCallbacks__.call(\(pending.callbackId), \(json))")
     }
 
+    /// The address payload widgets read.
+    ///
+    /// `CLPlacemark`'s own properties replace `addressDictionary`, which Apple deprecated
+    /// back in macOS 10.13. The *keys* are unchanged because they are the widget-facing
+    /// contract copied from `geolocation.js`, so existing widgets keep working. `street` is
+    /// rebuilt from house number plus thoroughfare to match what `addressDictionary["Street"]`
+    /// used to mean — a bare `thoroughfare` would silently drop the house number.
     private static func positionJSON(location: CLLocation, place: CLPlacemark?) -> String {
-        let address = place?.addressDictionary ?? [:]
-        func field(_ key: String) -> String {
-            (address[key] as? String ?? "").replacingOccurrences(of: "\"", with: "\\\"")
+        func field(_ value: String?) -> String {
+            (value ?? "").replacingOccurrences(of: "\"", with: "\\\"")
         }
+        let street = [place?.subThoroughfare, place?.thoroughfare]
+            .compactMap { $0 }
+            .joined(separator: " ")
         let coordinate = location.coordinate
         return """
         {"position":{"timestamp":\(location.timestamp.timeIntervalSince1970 * 1000),\
         "coords":{"latitude":\(coordinate.latitude),"longitude":\(coordinate.longitude),\
         "altitude":\(location.altitude),"accuracy":\(location.horizontalAccuracy),\
         "altitudeAccuracy":\(location.verticalAccuracy),"heading":\(location.course),\
-        "speed":\(location.speed)}},"address":{"street":"\(field("Street"))",\
-        "city":"\(field("City"))","zip":"\(field("ZIP"))","country":"\(field("Country"))",\
-        "state":"\(field("State"))","CountryCode":"\(field("CountryCode"))"}}
+        "speed":\(location.speed)}},"address":{"street":"\(field(street))",\
+        "city":"\(field(place?.locality))","zip":"\(field(place?.postalCode))",\
+        "country":"\(field(place?.country))","state":"\(field(place?.administrativeArea))",\
+        "CountryCode":"\(field(place?.isoCountryCode))"}}
         """
     }
 }

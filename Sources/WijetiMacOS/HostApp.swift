@@ -2,9 +2,18 @@ import AppKit
 import Foundation
 import WijetiCore
 
-/// Mutable launch flags shared with the supervisor's argument builder.
+/// Mutable launch state shared with the supervisor's argument builder.
+///
+/// The server reads both of these only when it starts (`--login-shell` and `-d`), so they are
+/// held by reference rather than captured by value: a change made while the app runs has to be
+/// visible to the *next* launch for the restart to pick it up.
 final class ServerFlags {
     var loginShell = false
+    var widgetDirectory: URL
+
+    init(widgetDirectory: URL) {
+        self.widgetDirectory = widgetDirectory
+    }
 }
 
 /// Everything the UI layers (tray menu, preferences, AppleScript) drive.
@@ -27,10 +36,10 @@ public final class HostApp {
     public var onServerStopped: (() -> Void)?
     public var onStatus: ((String) -> Void)?
 
-    private let widgetDirectory: URL
+    public private(set) var widgetDirectory: URL
     private let settingsDirectory: URL
     private let pollInterval: TimeInterval
-    private let flags = ServerFlags()
+    private let flags: ServerFlags
     private let socket = HostSocket()
     private var pollTimer: Timer?
 
@@ -47,6 +56,7 @@ public final class HostApp {
         self.settingsDirectory = settingsDirectory
         self.pollInterval = pollInterval
         self.loginShell = loginShell
+        flags = ServerFlags(widgetDirectory: widgetDirectory)
         flags.loginShell = loginShell
 
         coordinator = ScreenCoordinator(
@@ -62,7 +72,7 @@ public final class HostApp {
             argumentsForPort: { port in
                 [
                     serverResources.serverScript.path,
-                    "-d", widgetDirectory.path,
+                    "-d", launchFlags.widgetDirectory.path,
                     "-p", String(port),
                     "-s", settingsDirectory.path,
                 ] + (launchFlags.loginShell ? ["--login-shell"] : [])
@@ -90,7 +100,50 @@ public final class HostApp {
     public func start() {
         _ = try? platform.migrateLegacyWidgetsIfNeeded()
         _ = try? FileManager.default.createDirectory(at: widgetDirectory, withIntermediateDirectories: true)
+        // Before the server launches, so its first directory scan already sees the widget.
+        installStarterWidgetIfNeeded()
         _ = supervisor.start()
+    }
+
+    /// Copies the getting-started widget when the folder is empty.
+    ///
+    /// A new install otherwise lands on a completely blank desktop: nothing is installed until
+    /// the user opens the library and picks something, and a widgets app whose first impression
+    /// is "nothing happened" reads as broken. Only the welcome card is copied — which widgets
+    /// someone actually wants is theirs to choose.
+    public func installStarterWidgetIfNeeded() {
+        guard PresetInstaller.entries(in: widgetDirectory).isEmpty else { return }
+        do {
+            let result = try PresetInstaller.install(
+                from: platform.presetsDirectory,
+                to: widgetDirectory,
+                only: ["GettingStarted.jsx"]
+            )
+            guard !result.installed.isEmpty else { return }
+            NSLog("first launch: installed starter widget %@", result.installed)
+            onStatus?("Welcome widget installed")
+        } catch {
+            NSLog("could not install the starter widget: %@", error.localizedDescription)
+        }
+    }
+
+    /// Points the widget server at a different folder.
+    ///
+    /// The directory is a launch argument, so it cannot change under a running server: persist
+    /// it, then restart so the new folder is scanned. Widgets in the old folder are left alone —
+    /// silently moving or deleting someone's files because they picked a different folder would
+    /// be far worse than leaving them where they are.
+    public func setWidgetDirectory(_ url: URL) {
+        // Resolve before comparing: the panel can hand back `/tmp/x` when the folder the user
+        // is already using is `/private/tmp/x`, which is the same folder, not a new one.
+        let url = url.canonicalPathURL
+        guard url != widgetDirectory.canonicalPathURL else { return }
+        widgetDirectory = url
+        flags.widgetDirectory = url
+        _ = try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        UserDefaults.standard.set(url.path, forKey: AppKitPlatform.widgetDirectoryDefaultsKey)
+        onStatus?("Widget folder is now \(url.lastPathComponent) — restarting server")
+        supervisor.restart()
     }
 
     public func stop() {

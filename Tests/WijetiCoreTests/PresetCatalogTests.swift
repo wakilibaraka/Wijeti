@@ -64,6 +64,74 @@ final class PresetCatalogTests: XCTestCase {
         XCTAssertTrue(PresetCatalog.load(from: root).isEmpty)
     }
 
+    /// One unreadable row must cost one widget, not the whole library: a single bad hand edit
+    /// to `Catalog.json` used to blank every preset in the picker.
+    func testOneUnreadableEntryDoesNotEmptyTheLibrary() throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let json = """
+        [{"id":"good","title":"Good","category":"Clock","description":"d",\
+        "entry":"index.jsx","source":"s"},
+         {"id":"broken","title":"Broken"}]
+        """
+        try json.write(
+            to: root.appendingPathComponent("Catalog.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let report = PresetCatalog.loadReport(from: root)
+        XCTAssertEqual(report.presets.map(\.id), ["good"])
+        XCTAssertEqual(report.skipped, ["broken"])
+    }
+
+    /// The manifest is a convenience, not the source of truth: when it is missing the library
+    /// is rebuilt from the folders that are plainly sitting there, and the reason is recorded
+    /// so the empty state can explain itself.
+    func testFallsBackToTheDirectoryWhenTheManifestIsMissing() throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let widget = root.appendingPathComponent("liquid-glass-calendar.widget")
+        try FileManager.default.createDirectory(at: widget, withIntermediateDirectories: true)
+        try "x".write(to: widget.appendingPathComponent("index.jsx"), atomically: true, encoding: .utf8)
+
+        let report = PresetCatalog.loadReport(from: root)
+        XCTAssertEqual(report.presets.map(\.id), ["liquid-glass-calendar.widget"])
+        XCTAssertEqual(report.presets.first?.entry, "index.jsx")
+        XCTAssertEqual(report.presets.first?.title, "Liquid Glass Calendar")
+        XCTAssertNotNil(report.problem, "the missing manifest should be reported")
+    }
+
+    func testFallsBackToTheDirectoryWhenTheManifestIsUnreadable() throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "{ oops".write(
+            to: root.appendingPathComponent("Catalog.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "x".write(
+            to: root.appendingPathComponent("GettingStarted.jsx"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let catalog = PresetCatalog.load(from: root)
+        XCTAssertEqual(catalog.presets.map(\.id), ["GettingStarted.jsx"])
+        XCTAssertEqual(catalog.presets.first?.entry, "GettingStarted.jsx")
+    }
+
+    /// A directory holding a non-widget folder (a README, a stray asset) must not be offered
+    /// in the library.
+    func testFallbackIgnoresFoldersWithoutAnEntryFile() throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let junk = root.appendingPathComponent("Notes.widget")
+        try FileManager.default.createDirectory(at: junk, withIntermediateDirectories: true)
+        try "hello".write(to: junk.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(PresetCatalog.load(from: root).isEmpty)
+    }
+
     /// The bundled library must be internally consistent: every catalog row points at a
     /// preset that exists in `Resources/presets` with its entry file, every on-disk
     /// preset is catalogued, and ids/titles are unique. This is what stops a preset from
@@ -159,6 +227,78 @@ final class WidgetImporterTests: XCTestCase {
         XCTAssertEqual(WidgetImporter.widgetID(for: spaced, root: widgets), "My_Widget-widget-index-coffee")
     }
 
+    /// The observed bug: a widget folder named through a symlink (`/tmp/x`) and named again
+    /// through its real path (`/private/tmp/x`) produced *two* widgets for one file, because
+    /// the id is the path relative to the root and one of the two prefixes missed. Ids must be
+    /// derived from canonical paths so both names collapse to one widget.
+    func testWidgetIDIsStableAcrossASymlinkedRoot() throws {
+        let real = root.appendingPathComponent("real")
+        let link = root.appendingPathComponent("link")
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        let widget = real.appendingPathComponent("Clock.widget")
+        try FileManager.default.createDirectory(at: widget, withIntermediateDirectories: true)
+        try "x".write(to: widget.appendingPathComponent("index.jsx"), atomically: true, encoding: .utf8)
+
+        let throughLink = WidgetImporter.widgetID(
+            for: link.appendingPathComponent("Clock.widget/index.jsx"),
+            root: link
+        )
+        let throughRealPath = WidgetImporter.widgetID(
+            for: real.appendingPathComponent("Clock.widget/index.jsx"),
+            root: real
+        )
+        // The mixed case is the one that broke: a watcher reports the resolved path while the
+        // root is still the symlink the user picked.
+        let mixed = WidgetImporter.widgetID(
+            for: real.appendingPathComponent("Clock.widget/index.jsx"),
+            root: link
+        )
+        XCTAssertEqual(throughLink, "Clock-widget-index-jsx")
+        XCTAssertEqual(throughRealPath, throughLink)
+        XCTAssertEqual(mixed, throughLink)
+    }
+
+    func testCanonicalPathResolvesSymlinks() throws {
+        let real = root.appendingPathComponent("real-dir")
+        let link = root.appendingPathComponent("link-dir")
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+
+        XCTAssertEqual(link.canonicalPathURL.path, real.canonicalPathURL.path)
+        XCTAssertFalse(link.canonicalPathURL.path.contains("link-dir"))
+    }
+
+    /// `/tmp` is the case that broke in practice. Foundation's `resolvingSymlinksInPath()`
+    /// considers `/tmp` already canonical — it normalizes `/private/tmp` *to* `/tmp` — while
+    /// the kernel and FSEvents keep reporting `/private/tmp`. Handing the server `/tmp/x` is
+    /// what produced a stray `private-` in added widgets' ids, so the two names must collapse.
+    func testCanonicalPathResolvesTheTmpSymlink() throws {
+        #if os(macOS)
+        XCTAssertEqual(
+            URL(fileURLWithPath: "/tmp/wijeti-canonical-probe").canonicalPathURL.path,
+            "/private/tmp/wijeti-canonical-probe"
+        )
+        #endif
+    }
+
+    /// The widget folder is resolved before it necessarily exists (settings, `--widgets`,
+    /// first launch), so the canonical form has to resolve the part that does exist and keep
+    /// the rest: otherwise a brand-new folder would canonicalize to something else than the
+    /// same folder one second later.
+    func testCanonicalPathResolvesTheExistingPartOfAMissingPath() throws {
+        let real = root.appendingPathComponent("real-tail")
+        let link = root.appendingPathComponent("link-tail")
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+
+        let missing = link.appendingPathComponent("not-yet-created/inner")
+        XCTAssertEqual(
+            missing.canonicalPathURL.path,
+            real.canonicalPathURL.appendingPathComponent("not-yet-created/inner").path
+        )
+    }
+
     func testImportsWidgetFolder() throws {
         let source = incoming.appendingPathComponent("Clock.widget")
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
@@ -199,7 +339,10 @@ final class WidgetImporterTests: XCTestCase {
         let result = try importer.importWidgets(at: [edited])
         XCTAssertTrue(result.installed.isEmpty)
         XCTAssertEqual(result.skipped, ["Clock.widget"])
-        let installed = try String(contentsOf: widgets.appendingPathComponent("Clock.widget/index.coffee"))
+        let installed = try String(
+            contentsOf: widgets.appendingPathComponent("Clock.widget/index.coffee"),
+            encoding: .utf8
+        )
         XCTAssertEqual(installed, "new")
     }
 

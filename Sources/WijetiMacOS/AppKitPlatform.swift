@@ -39,9 +39,21 @@ public final class AppKitPlatform: HostPlatform {
         preferencesDirectory.appendingPathComponent("WidgetSettings.json")
     }
 
+    /// Where the widget server is told to look (`-d`).
+    ///
+    /// A folder chosen in settings wins over the default. It has to be resolvable before the
+    /// server process is launched, which is why it is read from defaults here rather than
+    /// being threaded through the UI.
+    public static let widgetDirectoryDefaultsKey = "WidgetDirectoryPath"
+
     public var widgetDirectory: URL {
-        applicationSupport
+        if let path = UserDefaults.standard.string(forKey: Self.widgetDirectoryDefaultsKey),
+           !path.isEmpty {
+            return URL(fileURLWithPath: path, isDirectory: true).canonicalPathURL
+        }
+        return applicationSupport
             .appendingPathComponent("Wijeti/widgets", isDirectory: true)
+            .canonicalPathURL
     }
 
     /// Where the pre-rename app kept widgets.

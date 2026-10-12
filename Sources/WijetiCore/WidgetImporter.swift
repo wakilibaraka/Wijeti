@@ -1,4 +1,52 @@
+#if canImport(Darwin)
+import Darwin
+#endif
 import Foundation
+
+public extension URL {
+    /// The canonical form of a path: symlinks resolved, `..` collapsed, existing ancestors
+    /// resolved even when the tail does not exist yet.
+    ///
+    /// Widget ids are derived *from the path*, so one folder that can be named two ways yields
+    /// two ids for one widget, and a half-matching prefix silently corrupts the id. Pointing
+    /// Wijeti at a `/tmp` folder reproduced all three failures at once: the server's first scan
+    /// used the path it was handed (`/tmp/…`, ids fine), while the FSEvents watcher reported the
+    /// resolved path (`/private/tmp/…`). Adding a widget then produced a second id —
+    /// `private-WeatherNow-widget-index-jsx`, because `filePath.replace(rootPath, '')` matched
+    /// its `/tmp/…` substring mid-string and left the `/private` stump behind — and deleting one
+    /// never unregistered anything, because the watcher's resolved paths no longer matched the
+    /// unresolved keys it had recorded.
+    ///
+    /// `resolvingSymlinksInPath()` cannot fix this: Foundation treats `/tmp` as already
+    /// canonical (it normalizes `/private/tmp` *to* `/tmp`), so it returns `/tmp/…` unchanged
+    /// while the kernel keeps reporting `/private/tmp/…`. Only `realpath(3)` agrees with the
+    /// watcher, which is why this asks it directly.
+    var canonicalPathURL: URL {
+        var probe = standardizedFileURL
+        var tail: [String] = []
+        while !probe.path.isEmpty, probe.path != "/" {
+            if let resolved = Self.realPath(probe.path) {
+                let base = URL(fileURLWithPath: resolved, isDirectory: probe.hasDirectoryPath)
+                return tail.reversed().reduce(base) { $0.appendingPathComponent($1) }
+            }
+            tail.append(probe.lastPathComponent)
+            probe = probe.deletingLastPathComponent()
+        }
+        return standardizedFileURL
+    }
+
+    /// `realpath(3)`, or `nil` when the path does not exist (the caller then resolves its
+    /// nearest existing ancestor and re-appends the rest).
+    private static func realPath(_ path: String) -> String? {
+        #if canImport(Darwin)
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard realpath(path, &buffer) != nil else { return nil }
+        return String(cString: buffer)
+        #else
+        return nil
+        #endif
+    }
+}
 
 /// Imports widgets from anywhere on disk — a dropped folder, a picked `.jsx`, a zip's
 /// worth of loose files — into the widget directory the server watches.
@@ -7,11 +55,18 @@ import Foundation
 /// hands URLs straight to `importWidgets(at:)`.
 public struct WidgetImporter: Equatable, Sendable {
     public let widgetDirectory: URL
-    public let fileManager: FileManager
 
-    public init(widgetDirectory: URL, fileManager: FileManager = .default) {
+    /// The shared, documented thread-safe `FileManager`.
+    ///
+    /// This used to be an injectable stored property, which meant the struct could not honestly
+    /// be `Sendable` — `FileManager` is not — and the compiler warned that the mismatch becomes
+    /// an error under the Swift 6 language mode. The injection point was never once passed a
+    /// non-default value, so it bought nothing and cost the conformance the rest of the core
+    /// depends on.
+    private var fileManager: FileManager { .default }
+
+    public init(widgetDirectory: URL) {
         self.widgetDirectory = widgetDirectory
-        self.fileManager = fileManager
     }
 
     public struct Result: Equatable, Sendable {
@@ -46,8 +101,8 @@ public struct WidgetImporter: Equatable, Sendable {
     /// root, with `/` and `.` turned into `-` (`server/src/resolveWidget.js`). We must match
     /// it exactly, or the UI would show one name and the settings file would use another.
     public static func widgetID(for filePath: URL, root: URL) -> String {
-        let rootPath = root.standardizedFileURL.path
-        var path = filePath.standardizedFileURL.path
+        let rootPath = root.canonicalPathURL.path
+        var path = filePath.canonicalPathURL.path
         if path.hasPrefix(rootPath) {
             path = String(path.dropFirst(rootPath.count))
         }
@@ -133,13 +188,20 @@ public struct WidgetImporter: Equatable, Sendable {
 
     /// The file the server treats as the widget's entry point, if there is one.
     public func entryFile(in directory: URL) -> String? {
-        for name in Self.entryNames where fileManager.fileExists(
+        Self.entryFile(in: directory)
+    }
+
+    /// Static so callers that only have a directory — the catalog's on-disk fallback, for
+    /// one — can ask the same question without constructing an importer.
+    public static func entryFile(in directory: URL) -> String? {
+        let fileManager = FileManager.default
+        for name in entryNames where fileManager.fileExists(
             atPath: directory.appendingPathComponent(name).path
         ) {
             return name
         }
         let contents = (try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? []
-        return contents.sorted().first { Self.entryExtensions.contains(($0 as NSString).pathExtension.lowercased()) }
+        return contents.sorted().first { entryExtensions.contains(($0 as NSString).pathExtension.lowercased()) }
     }
 
     private func copy(from source: URL, to destination: URL, isDirectory: Bool) throws {

@@ -198,6 +198,9 @@ public final class WidgetLibraryModel: ObservableObject {
 
     @Published public var installed: [Installed] = []
     @Published public var catalog: PresetCatalog = PresetCatalog(presets: [])
+    /// Why the bundled library is empty, when it is empty for a reason other than
+    /// "there are none". Set by `loadCatalog()` from the loader's own report.
+    @Published public var catalogProblem: String?
     @Published public var search = ""
     @Published public var selectedCategory: String?
     @Published public var status = ""
@@ -226,13 +229,17 @@ public final class WidgetLibraryModel: ObservableObject {
 
     let previewController: WidgetPreviewController
     private let host: HostApp
-    private let importer: WidgetImporter
     private let presetsDirectory: URL
+
+    /// Built on demand rather than stored: the widget folder can change while the app runs, so
+    /// a cached importer would keep writing into the folder the user just moved away from.
+    private var importer: WidgetImporter {
+        WidgetImporter(widgetDirectory: host.widgetDirectoryURL)
+    }
 
     public init(host: HostApp, presetsDirectory: URL) {
         self.host = host
         self.presetsDirectory = presetsDirectory
-        self.importer = WidgetImporter(widgetDirectory: host.widgetDirectoryURL)
         previewController = WidgetPreviewController(
             platform: host.platform,
             loginShell: { host.loginShell }
@@ -243,6 +250,34 @@ public final class WidgetLibraryModel: ObservableObject {
         previewController.onReadyChange = { [weak self] ready in
             self?.previewReady = ready
         }
+        // Read the catalog now, not on first show. The SwiftUI content is built as part of
+        // this controller's window, so anything loaded only in `showWindow` is missing from
+        // the render the user actually sees — which is how the library came up as
+        // "0 widgets bundled" and only filled in after some later action triggered a reload.
+        loadCatalog()
+    }
+
+    /// Reads `Catalog.json` and records why it was empty, if it was.
+    func loadCatalog() {
+        let report = PresetCatalog.loadReport(from: presetsDirectory) { NSLog("%@", $0) }
+        catalog = PresetCatalog(presets: report.presets)
+        catalogProblem = report.presets.isEmpty ? report.problem : nil
+    }
+
+    /// Where the library was read from, with the home directory abbreviated for display.
+    public var libraryDirectoryDisplayPath: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let path = presetsDirectory.canonicalPathURL.path
+        return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+    }
+
+    /// Opens the library folder so a broken install can be inspected where it actually is.
+    public func revealLibraryDirectory() {
+        let directory = presetsDirectory.canonicalPathURL
+        let target = FileManager.default.fileExists(atPath: directory.path)
+            ? directory
+            : directory.deletingLastPathComponent()
+        host.platform.revealInFinder(target)
     }
 
     // MARK: - Preview selection
@@ -285,7 +320,7 @@ public final class WidgetLibraryModel: ObservableObject {
     /// Re-reads the bundled catalog and everything that derives from the server's state.
     /// Reserved for the points where the catalog itself can have changed.
     public func reload() {
-        catalog = PresetCatalog.load(from: presetsDirectory)
+        loadCatalog()
         refreshInstalledFromHost()
     }
 
@@ -580,6 +615,59 @@ public final class WidgetLibraryModel: ObservableObject {
         reload()
     }
 
+    // MARK: - Source on disk
+
+    /// The preset's folder, or its bare `.jsx` file when the preset is a single file.
+    public func sourceRoot(for preset: Preset) -> URL {
+        presetsDirectory.appendingPathComponent(preset.id)
+    }
+
+    /// The file an editor should open: the entry file inside a widget folder, or the preset
+    /// file itself for a bare `.jsx`.
+    public func sourceFile(for preset: Preset) -> URL {
+        let base = sourceRoot(for: preset)
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: base.path, isDirectory: &isDirectory)
+        guard exists, isDirectory.boolValue, !preset.entry.isEmpty else { return base }
+        return base.appendingPathComponent(preset.entry)
+    }
+
+    /// Shows a bundled widget's source in Finder.
+    public func revealSource(for preset: Preset) {
+        let url = sourceRoot(for: preset)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            status = "\(preset.title) is no longer on disk."
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    /// Opens a bundled widget's entry file in whatever the user has set as their editor.
+    ///
+    /// A stock macOS has no handler for `.jsx`, so failing here is a normal outcome and is
+    /// reported rather than swallowed.
+    public func openSource(for preset: Preset) {
+        let target = sourceFile(for: preset)
+        guard FileManager.default.fileExists(atPath: target.path) else {
+            status = "\(preset.title) is no longer on disk."
+            return
+        }
+        if !NSWorkspace.shared.open(target) {
+            status = "Nothing is set to open \(target.lastPathComponent) — use Reveal and pick an app."
+        }
+    }
+
+    /// Shows an installed widget in Finder.
+    public func revealOnDisk(_ widget: Installed) {
+        guard let folder = folderName(forServerID: widget.id) else {
+            status = "Could not locate \(widget.title) on disk."
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([
+            host.widgetDirectoryURL.appendingPathComponent(folder)
+        ])
+    }
+
     public func remove(_ widget: Installed) {
         // The id the server uses is the path with separators turned into dashes, so undo it.
         guard let folder = folderName(forServerID: widget.id) else {
@@ -799,6 +887,9 @@ struct WidgetLibraryView: View {
                 set: { model.setOnAllScreens($0, for: widget.id) }
             ))
             Divider()
+            Button("Reveal in Finder") {
+                model.revealOnDisk(widget)
+            }
             Button("Remove \(widget.title)…", role: .destructive) {
                 model.confirmRemove(widget)
             }
@@ -967,12 +1058,32 @@ struct WidgetLibraryView: View {
                 .foregroundStyle(.tertiary)
 
             if model.selectedCategory == nil && model.search.isEmpty {
-                Text("No bundled widgets yet")
+                Text(model.catalogProblem == nil ? "No bundled widgets yet" : "The widget library didn't load")
                     .font(.callout.weight(.medium))
-                Text("You can still add your own — drop a folder or .zip here, or use Install Your Own…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+                if let problem = model.catalogProblem {
+                    // Say what went wrong and where we looked. Without this the user is left
+                    // guessing whether the app shipped empty or failed to read its own files.
+                    Text(problem)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Text(model.libraryDirectoryDisplayPath)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+                        .multilineTextAlignment(.center)
+                    Button("Reveal Library Folder") {
+                        model.revealLibraryDirectory()
+                    }
+                    .controlSize(.small)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.tint)
+                } else {
+                    Text("You can still add your own — drop a folder or .zip here, or use Install Your Own…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
             } else {
                 Text("No widgets match")
                     .font(.callout.weight(.medium))
@@ -1115,6 +1226,14 @@ struct WidgetLibraryView: View {
                             .controlSize(.small)
                         }
                         Spacer()
+                        // The bridge to actually editing a widget: its own source, in Finder
+                        // and in whatever editor the user already uses.
+                        Button("Reveal") { model.revealSource(for: preset) }
+                            .controlSize(.small)
+                            .help("Show this widget's source in Finder")
+                        Button("Edit Source") { model.openSource(for: preset) }
+                            .controlSize(.small)
+                            .help("Open the widget's entry file in your default editor")
                         Button("Cancel") {
                             model.selectedPreset = nil
                         }
