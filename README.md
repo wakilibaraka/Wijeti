@@ -1,178 +1,97 @@
 # ⚡ Wijeti
 
-A native Swift desktop widget host for macOS — the spirit of
-[Übersicht](https://github.com/felixhageloh/uebersicht) rewritten from scratch in Swift,
-with a modern menu bar, a first-launch onboarding, and a Settings panel built the way
-Apple ships settings surfaces today.
+A native Swift desktop widget host for macOS: the spirit of
+[Übersicht](https://github.com/felixhageloh/uebersicht) rewritten in Swift, with a menu bar app, a
+widget library with live preview, and permissions that cover what widgets actually need.
 
-## What's new in 0.1.0
+> **Beta.** Wijeti `0.1.0-beta.1` is ad-hoc signed and not notarized. Follow
+> **[INSTALL.md](INSTALL.md)** for the safe one-time steps to open it.
 
-- **Library without Finder.** The Widget Library (`⌘L`, or the tray) lists bundled widgets
-  by category with search, installs them in one click, and lets you toggle each one on and
-  off. Drag a widget folder onto the window, or use **Install Your Own…**, and it lands
-  in the right place — you never need to know the path.
-- **Modern menu bar.** A compact status item with a categorized menu, live status text, and
-  keyboard shortcuts. Refresh, reload, open the library, open the widgets folder, visit the
-  widget gallery (community widgets), Preferences, or Quit — all from one place.
-- **Onboarding and Settings, the iOS-style way.** First-launch onboarding leads with SF
-  Symbols and a vertical feature list, with a flat call-to-action button pinned to the bottom.
-  Settings uses inset-grouped sections with small icon badges that telegraph what each group
-  controls.
-- **Permissions and data sources.** One pane lists the permissions widgets may need
-  (Location, Full Disk Access, Automation, Notifications), shows the real status, and opens
-  the exact System Settings pane. The weather widget uses [Open-Meteo](https://open-meteo.com/),
-  which needs no API key.
-- **AppleScript.** `refresh`, `reload`, `count widgets`, and `every widget` with
-  `id` / `hidden` / `showOnMainScreen` / `showOnAllScreens`.
-- **Hybrid widget platform, in progress.** Work has begun on a second widget file format
-  (plain HTML/CSS/JS packages with typed variables stored in the system Keychain), an in-app
-  code-editor studio with live preview, and a manifest designed to be portable to
-  iOS / WidgetKit later. See [docs/ROADMAP.md](docs/ROADMAP.md).
+## Download
 
-## Requirements
+Pick the build that matches your Mac from the
+[Releases](https://github.com/wakilibaraka/Wijeti/releases) page:
 
-- macOS 15 or later, Apple Silicon (arm64)
-- Xcode 16+ (`xcode-select --switch /Applications/Xcode.app`) — the `sdef` / `osacompile`
-  tooling needs the full Xcode, not just the Command Line Tools.
+| Mac | File |
+| --- | --- |
+| Apple Silicon (M1 and later) | `Wijeti-<version>-arm64.dmg` |
+| Intel | `Wijeti-<version>-x86_64.dmg` |
 
-## Build and run
+Requires macOS 15 or later. Updates arrive automatically (Settings → General → Updates).
 
-```sh
-git clone https://github.com/wakilibaraka/Wijeti.git
-cd Wijeti
+## Features
 
-# 1. Assemble the widget runtime (downloads Node for your architecture once).
-./Scripts/build-runtime.sh
+- **Widget Library (⌘L).** Grid or list, foldable category sidebar, search, live preview, and
+  multi-select with bulk show / hide, placement, category and remove.
+- **Add your own (⌘N).** `.zip`, folders, `.jsx` / `.js` / `.coffee` or plain `.html` pages; then
+  name and categorize them. Right-click anything for its menu.
+- **Permissions.** About 25 permissions (Automation per app, Calendars, Camera, Bluetooth, Full
+  Disk, …) with live status and one-click prompts. Pressing **Allow** next to an app under
+  Automation is what makes Wijeti appear in System Settings → Privacy & Security → Automation.
+- **Menu bar.** Health indicator (Active / Reloading / Stopped), Add Widgets, Refresh, Reload,
+  Preferences, Check for Updates.
+- **Settings.** General, Widgets, Permissions, Advanced (engine health, restart, developer mode).
+- **AppleScript.** `refresh`, `reload`, `count widgets`, and `every widget` with properties.
 
-# 2. Build, bundle and code-sign Wijeti.app
-./Scripts/build-app.sh
-
-# 3. Install
-cp -R build/Wijeti.app /Applications/ && open -a /Applications/Wijeti.app
-```
-
-`build-app.sh` ad-hoc signs the bundle with `com.apple.security.cs.disable-library-validation`.
-That entitlement is mandatory: without it the bundled Node runtime aborts on `dlopen` of
-`fsevents.node` with a Team-ID mismatch, which costs three ports' worth of confusion.
-
-## First launch
-
-The first time you open Wijeti you'll see the onboarding window. It explains what Wijeti
-does in a few short feature cards with SF Symbols, and ends with a big flat
-**Get Started** button pinned to the bottom. After that, the menu bar icon is your home base.
-
-## Layout
-
-```
-Sources/WijetiCore/     portable models + server supervision — no AppKit import
-Sources/WijetiMacOS/    AppKit host: windows, tray, preferences, onboarding, web views
-Sources/WijetiApp/      @main executable, options parsing, snapshot proof
-Tests/WijetiCoreTests/  unit tests (no macOS frameworks required)
-Resources/              sdef, Info.plist, entitlements, bundled presets, icon
-server/                 the Node widget engine, unmodified
-Scripts/                build-runtime.sh, build-app.sh
-docs/                   roadmap and design notes
-```
-
-`WijetiCore` stays AppKit-free so a Linux or Windows host becomes a new `HostPlatform`
-implementation rather than a fork.
-
-## Widgets
+## Writing a widget
 
 A widget is a folder containing `index.jsx` (or a single `.jsx` / `.coffee` / `.js` file):
 
 ```jsx
-import { React, run } from "uebersicht";
-
 export const refreshFrequency = 1000;
 export const command = "date '+%Y-%m-%d %H:%M'";
 
 export const render = ({ output }) => <div>{output}</div>;
 ```
 
-`inBackground` puts a widget behind other applications; everything else renders on top.
-
-If an old QtWidgets-based widget renders blank, open an issue and include the widget's
-folder name and the macOS error log.
-
-### Bundled
-
-Bundled presets are hand-written, curated widgets. They're meant to be a starting point —
-copy any of them and make it yours.
-
-## Adding and removing widgets
-
-You never need to open the widget folder directly. Everything happens from the **Widget
-Library** window (⌘L, or the tray menu → Widget Library…):
-
-### Add a bundled widget
-
-1. Open the Widget Library.
-2. Find the widget in the **Library** section (use the search bar or category chips to filter).
-3. Click **Add** — a confirmation popup asks you to confirm.
-4. The widget is copied into your widget directory, marked visible and shown on all screens,
-   and the running server reloads. The widget now appears in the **Your widgets** section at
-   the top of the Library, where you can toggle it on/off, send it behind other apps, or show
-   it on all screens.
-
-### Add your own widget
-
-Drop any of these onto the Widget Library window (or any part of the app that accepts drops):
-
-- A widget **folder** (must contain `index.jsx`, `index.coffee`, or `index.js`).
-- A single **`.jsx` / `.coffee` / `.js` file** — Wijeti wraps it in a folder of the same name.
-- A **`.zip` archive** — Wijeti extracts it to a temp folder and imports the contents. If the
-  zip contains a single top-level folder, that folder's contents are imported directly.
-
-You can also click **Install Your Own…** in the Library header to open a file picker.
-
-### Remove a widget
-
-1. In the **Your widgets** section at the top of the Library, find the widget.
-2. Click the **trash** icon — a confirmation popup asks you to confirm.
-3. The widget is removed from disk and the server reloads. It disappears from the list.
-
-### Toggle a widget without removing it
-
-In the **Your widgets** section:
-
-- The checkbox on the left toggles **visibility** (hidden widgets don't render).
-- **Behind apps** sends the widget behind other applications.
-- **All screens** shows the widget on every display.
-- **Preview** loads the widget in the preview pane so you can see it before it goes live.
-
-The menu bar tray also lets you refresh all widgets, reload them, or open the Library —
-no need to touch the widget folder.
+Drop it on the Widget Library window, or press **Add Widget**. Wijeti never needs you to open the
+widgets folder (`~/Library/Application Support/Wijeti/widgets`) yourself.
 
 ## Keyboard shortcuts
 
 | Shortcut | Action |
 | --- | --- |
-| `⌘L` | Show the Widget Library |
-| `⌘,` | Show Preferences |
-| `⌘Q` | Quit Wijeti (from the menu bar) |
+| `⌘L` | Widget Library |
+| `⌘N` | Add Widgets (menu bar) |
+| `⌘,` | Preferences |
+| `⌘A` | Select all shown (Library) |
+| `⌘⌃S` | Fold / unfold the category sidebar |
+| `⌘Q` | Quit |
 
-## First release DMG
+## Build from source
 
-The first release ships as a `.dmg` for drag-and-drop install. From the built
-`build/Wijeti.app`:
+Requires macOS 15+, Xcode 16+ (`xcode-select --switch /Applications/Xcode.app`).
 
 ```sh
-hdiutil create -volname Wijeti -srcfolder build/Wijeti.app \
-  -ov -format UDZO Wijeti-0.1.0-arm64.dmg
+git clone https://github.com/wakilibaraka/Wijeti.git && cd Wijeti
+./Scripts/build-runtime.sh                 # once: assembles server/release (Node + widget engine)
+ARCH=arm64 ./Scripts/build-app.sh          # or ARCH=x86_64 → build/<arch>/Wijeti.app
+cp -R build/arm64/Wijeti.app /Applications/
 ```
 
-That produces `Wijeti-0.1.0-arm64.dmg` in the repository root. Open it to drag
-Wijeti into `/Applications`.
+`build-app.sh` ad-hoc signs by default and keeps `com.apple.security.cs.disable-library-validation`
+(without it the bundled Node aborts loading `fsevents.node` with a Team-ID mismatch). Set
+`SIGN_IDENTITY="Developer ID Application: …"` to sign with a real identity.
 
-## Reproducible builds
+## Releasing
 
-- `Scripts/build-runtime.sh` produces `server/release` — the portable Node widget engine
-  that `Wijeti.app` embeds.
-- `Scripts/build-app.sh` builds the Swift binary, assembles the bundle, and ad-hoc signs it.
-- Run `swift test` from the package root before releasing; the test suite includes a
-  catalog-consistency test that asserts the bundled catalog, folder names, and entry files
-  all agree.
+```sh
+./Scripts/release.sh
+```
+
+Runs the tests, builds **both** architectures, packages `dist/<arch>/Wijeti-<version>-<arch>.dmg`
+with a SHA-256 file, and signs/updates the per-architecture Sparkle feeds in `updates/`. The version
+lives in `VERSION` and `BUILD_NUMBER`. See the printed commands for tagging and publishing.
+Update downloads are signed with an EdDSA key held in the maintainer's Keychain
+(`Sparkle/bin/generate_keys`); keep a backup of it, because losing it means existing installs can
+no longer verify updates.
+
+## Troubleshooting
+
+- Blocked on first open → [INSTALL.md](INSTALL.md).
+- A widget does nothing → Settings → Permissions; Automation needs **Allow** per app.
+- Logs (home folder already shortened to `~`):
+  `log show --last 30m --predicate 'process == "WijetiApp"' --style compact`
 
 ## Architecture
 
@@ -187,9 +106,8 @@ Wijeti into `/Applications`.
 
 ## Roadmap
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). The near-term work is the second widget format
-(HTML packages with typed variables), the in-app code studio, and portability groundwork for
-iOS / other systems later.
+Near term: notarized builds, a second widget format (HTML packages with typed variables), an
+in-app code studio, and portability groundwork for other systems.
 
 ## Credits
 
