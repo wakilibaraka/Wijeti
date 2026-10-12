@@ -307,6 +307,9 @@ struct WidgetSettingsView: View {
                 }
                 .padding(.bottom, 10)
 
+                UpdatesSection()
+                    .padding(.bottom, 10)
+
                 insetGroupedSection(
                     badge: "square.grid.2x2",
                     badgeColor: .blue,
@@ -398,6 +401,37 @@ struct WidgetSettingsView: View {
             }
             .padding(.horizontal, 20)
             .padding(.top, 12)
+        }
+    }
+}
+
+// MARK: - Updates
+
+/// Automatic-update controls: the current version, a manual check, and the background-check switch.
+private struct UpdatesSection: View {
+    @ObservedObject private var updates = UpdateController.shared
+
+    var body: some View {
+        insetGroupedSection(
+            badge: "arrow.down.circle",
+            badgeColor: .green,
+            title: "Updates",
+            subtitle: updates.versionDescription,
+            footer: updates.isAvailable
+                ? "Wijeti checks for new versions in the background and asks before installing."
+                : "Updates are only available in the packaged app."
+        ) {
+            HStack(spacing: 14) {
+                Toggle("Check automatically", isOn: Binding(
+                    get: { updates.automaticallyChecks },
+                    set: { updates.automaticallyChecks = $0 }
+                ))
+                .disabled(!updates.isAvailable)
+                Spacer()
+                Button("Check Now") { updates.checkForUpdates() }
+                    .disabled(!updates.canCheckForUpdates)
+            }
+            .padding(.vertical, 4)
         }
     }
 }

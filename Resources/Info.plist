@@ -19,7 +19,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>0.1.0-beta.1</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
@@ -78,5 +78,13 @@
 	<false/>
 	<key>OSAScriptingDefinition</key>
 	<string>Wijeti.sdef</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/wakilibaraka/Wijeti/main/updates/appcast-arm64.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>3Ad9K11QIGLabGeVODazN5vbcZpSQoB5DJJaDTkb0Uk=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>

@@ -13,9 +13,19 @@ let package = Package(
     products: [
         .executable(name: "WijetiApp", targets: ["WijetiApp"])
     ],
+    dependencies: [
+        // Automatic updates. Sparkle verifies every download against an EdDSA signature.
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.4"),
+    ],
     targets: [
         .target(name: "WijetiCore"),
-        .target(name: "WijetiMacOS", dependencies: ["WijetiCore"]),
+        .target(
+            name: "WijetiMacOS",
+            dependencies: [
+                "WijetiCore",
+                .product(name: "Sparkle", package: "Sparkle"),
+            ]
+        ),
         .executableTarget(
             name: "WijetiApp",
             dependencies: ["WijetiCore", "WijetiMacOS"]

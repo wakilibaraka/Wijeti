@@ -107,6 +107,9 @@ public final class TrayMenuController: NSObject, NSMenuDelegate {
         let preferences = makeMenuItem("Preferences…", #selector(showPreferences))
         preferences.keyEquivalent = ","
         menu.addItem(preferences)
+        if MainActor.assumeIsolated({ UpdateController.shared.isAvailable }) {
+            menu.addItem(makeMenuItem("Check for Updates…", #selector(checkForUpdates)))
+        }
         menu.addItem(.separator())
         let quit = makeMenuItem("Quit Wijeti", #selector(quit))
         quit.keyEquivalent = "q"
@@ -245,6 +248,7 @@ public final class TrayMenuController: NSObject, NSMenuDelegate {
         host.disableAllNow()
         onOpenLibrary?()
     }
+    @objc private func checkForUpdates() { MainActor.assumeIsolated { UpdateController.shared.checkForUpdates() } }
     @objc private func quit() { onQuit?() }
 
     private func makeMenuItem(_ title: String, _ action: Selector) -> NSMenuItem {
