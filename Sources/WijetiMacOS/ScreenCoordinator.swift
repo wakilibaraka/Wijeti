@@ -79,6 +79,10 @@ public final class ScreenCoordinator {
         let screens = NSScreen.screens
         let layout = screens.map(\.frame)
         guard layout != lastLayout || port != lastPortApplied else { return }
+        // Existing web views point at the old server; rebuild them rather than leaving them dead.
+        if let previous = lastPortApplied, previous != port {
+            closeAllWindows()
+        }
         lastLayout = layout
         lastPortApplied = port
         var wanted: [String: WidgetWindow] = [:]
@@ -149,6 +153,11 @@ public final class ScreenCoordinator {
         }
     }
 
+    /// Applies the developer-mode setting to windows that already exist.
+    public func setInspectable(_ enabled: Bool) {
+        for entry in windows.values { entry.controller.webView.isInspectable = enabled }
+    }
+
     public func reloadAll() {
         for entry in windows.values {
             entry.controller.reload()
@@ -156,7 +165,16 @@ public final class ScreenCoordinator {
     }
 
     public func shutdown() {
+        closeAllWindows()
+        // Forget what was applied: the next server may come back on the same port with the
+        // same screens, and the guard in `apply(port:)` would otherwise leave the desktop empty.
+        lastLayout = []
+        lastPortApplied = nil
+    }
+
+    private func closeAllWindows() {
         for entry in windows.values {
+            entry.controller.shutdown()
             entry.window.orderOut(nil)
             entry.window.close()
         }

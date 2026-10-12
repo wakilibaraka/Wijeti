@@ -14,6 +14,7 @@ final class WidgetWebViewController: NSObject, WKScriptMessageHandler, WKNavigat
     private let geolocation = GeolocationBridge()
     private var mainURL: URL?
     private weak var window: NSWindow?
+    private var isShutDown = false
 
     init(argvPath: String) {
         let controller = WKUserContentController()
@@ -50,6 +51,7 @@ final class WidgetWebViewController: NSObject, WKScriptMessageHandler, WKNavigat
         // layer as a PNG, and its transparent fraction is the regression check for this line.
         webView.setValue(false, forKey: "drawsBackground")
         webView.underPageBackgroundColor = .clear
+        webView.isInspectable = DeveloperMode.isEnabled
         // A widget that throws leaves a blank, transparent window with nothing to read in
         // the log. Surfacing the message in the title means `page probe` below reports it.
         controller.addUserScript(WKUserScript(
@@ -142,7 +144,8 @@ final class WidgetWebViewController: NSObject, WKScriptMessageHandler, WKNavigat
             return
         }
         if navigationAction.navigationType == .linkActivated {
-            if let url = navigationAction.request.url {
+            if let url = navigationAction.request.url,
+               ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") {
                 onOpenExternal?(url)
             }
             decisionHandler(.cancel)
@@ -153,11 +156,26 @@ final class WidgetWebViewController: NSObject, WKScriptMessageHandler, WKNavigat
         }
     }
 
+    /// Releases everything that keeps this controller alive: WebKit retains script message
+    /// handlers strongly, which otherwise leaks the web view and its retry timer forever.
+    func shutdown() {
+        isShutDown = true
+        let controller = webView.configuration.userContentController
+        controller.removeScriptMessageHandler(forName: "uebersicht")
+        controller.removeScriptMessageHandler(forName: "geolocation")
+        webView.navigationDelegate = nil
+        webView.stopLoading()
+    }
+
     private func handleLoadFailure(_ error: Error) {
+        // -999 is a navigation cancelled by a newer one (e.g. `reload()` mid-load), not a failure.
+        if (error as NSError).domain == NSURLErrorDomain, (error as NSError).code == NSURLErrorCancelled { return }
         NSLog("error loading webview: %@", error.localizedDescription)
         onLoadFailure?(error)
+        guard !isShutDown else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-            self?.reload()
+            guard let self, !self.isShutDown else { return }
+            self.reload()
         }
     }
 
@@ -166,4 +184,10 @@ final class WidgetWebViewController: NSObject, WKScriptMessageHandler, WKNavigat
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "'", with: "\\'")
     }
+}
+
+/// Developer mode makes every widget web view inspectable (Safari → Develop → this Mac).
+enum DeveloperMode {
+    static let defaultsKey = "developerMode"
+    static var isEnabled: Bool { UserDefaults.standard.bool(forKey: defaultsKey) }
 }

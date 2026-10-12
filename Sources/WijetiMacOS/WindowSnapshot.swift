@@ -88,7 +88,7 @@ public enum WindowSnapshot {
         }
         do {
             try png.write(to: url)
-            NSLog("wrote %@", url.path)
+            NSLog("wrote %@", url.logPath)
             return true
         } catch {
             NSLog("png write failed: %@", error.localizedDescription)

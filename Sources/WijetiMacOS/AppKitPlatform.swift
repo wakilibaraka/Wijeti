@@ -67,11 +67,8 @@ public final class AppKitPlatform: HostPlatform {
         if let bundled = Bundle.main.resourceURL?.appendingPathComponent("presets", isDirectory: true) {
             return bundled
         }
-        // Running straight out of `swift run` there is no bundle; fall back to the repo.
-        return URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()  // WijetiMacOS
-            .deletingLastPathComponent()  // Sources
-            .deletingLastPathComponent()  // swift
+        // No bundle (a bare executable): assume it was started from the repo root.
+        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
             .appendingPathComponent("Resources/presets", isDirectory: true)
     }
 
@@ -108,7 +105,7 @@ public final class AppKitPlatform: HostPlatform {
                 to: destination.appendingPathComponent(name)
             )
         }
-        NSLog("migrated %d widget(s) from %@", legacyWidgets.count, legacy.path)
+        NSLog("migrated %d widget(s) from %@", legacyWidgets.count, legacy.logPath)
         return legacyWidgets.count
     }
 

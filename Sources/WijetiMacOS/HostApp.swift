@@ -42,6 +42,8 @@ public final class HostApp {
     private let flags: ServerFlags
     private let socket = HostSocket()
     private var pollTimer: Timer?
+    private var pollInFlight = false
+    private var lastLocalChange = Date.distantPast
 
     public init(
         platform: AppKitPlatform,
@@ -91,6 +93,7 @@ public final class HostApp {
             self.pollTimer = nil
             self.socket.close()
             self.port = nil
+            self.pollInFlight = false
             self.onServerStopped?()
         }
     }
@@ -159,6 +162,7 @@ public final class HostApp {
         guard enabled != loginShell else { return }
         loginShell = enabled
         flags.loginShell = enabled
+        UserDefaults.standard.set(enabled, forKey: "loginShell")
         onStatus?("Login shell \(enabled ? "on" : "off") — restarting server")
         supervisor.restart()
     }
@@ -183,11 +187,19 @@ public final class HostApp {
     }
 
     private func refreshState(port: Int) {
+        // One poll at a time: a slow response must not pile up behind the 1 Hz timer.
+        guard !pollInFlight else { return }
+        pollInFlight = true
         let url = URL(string: "http://127.0.0.1:\(port)/state/")!
         Task { [weak self] in
             guard let self else { return }
-            guard let fetched = try? await WidgetStateResponse.fetch(from: url) else { return }
+            let fetched = try? await WidgetStateResponse.fetch(from: url)
             await MainActor.run {
+                self.pollInFlight = false
+                // Drop results for a server that has since stopped or moved to another port,
+                // and ones that raced a local settings change (the next poll catches up).
+                guard let fetched, self.port == port else { return }
+                if Date().timeIntervalSince(self.lastLocalChange) < 1.5 { return }
                 self.state = fetched
                 self.coordinator.apply(state: fetched, port: port)
                 self.onStateChange?(fetched)
@@ -237,6 +249,7 @@ public final class HostApp {
         // in the same AppleScript event sees the new value; the next poll replaces this with
         // the server's own copy, which is the one that owns the file.
         state.settings[widgetID] = settings
+        lastLocalChange = Date()
         onStatus?("Updated \(widgetID)")
     }
 

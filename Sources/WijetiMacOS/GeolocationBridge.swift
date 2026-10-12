@@ -10,7 +10,7 @@ import WebKit
 /// `__UBCallbacks__.call(callbackId, <json>)`.
 final class GeolocationBridge: NSObject, WKScriptMessageHandler, CLLocationManagerDelegate {
     private struct Pending {
-        let webView: WKWebView?
+        weak var webView: WKWebView?
         let callbackId: Int
     }
 
@@ -87,7 +87,10 @@ final class GeolocationBridge: NSObject, WKScriptMessageHandler, CLLocationManag
     /// used to mean — a bare `thoroughfare` would silently drop the house number.
     private static func positionJSON(location: CLLocation, place: CLPlacemark?) -> String {
         func field(_ value: String?) -> String {
-            (value ?? "").replacingOccurrences(of: "\"", with: "\\\"")
+            // JSON-escape via the encoder so backslashes, quotes and newlines stay valid.
+            let data = try? JSONEncoder().encode(value ?? "")
+            let quoted = data.flatMap { String(data: $0, encoding: .utf8) } ?? "\"\""
+            return String(quoted.dropFirst().dropLast())
         }
         let street = [place?.subThoroughfare, place?.thoroughfare]
             .compactMap { $0 }

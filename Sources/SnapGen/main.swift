@@ -37,7 +37,7 @@ struct SnapGen {
         if let png = image.tiffRepresentation,
            let rep = NSBitmapImageRep(data: png),
            let data = rep.representation(using: .png, properties: [:]) {
-            let out = URL(fileURLWithPath: "/tmp/wijeti-icon.png")
+            let out = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "wijeti-icon.png")
             try? data.write(to: out)
             print("Wrote \(out.path)")
         }
