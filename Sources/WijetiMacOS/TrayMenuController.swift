@@ -186,8 +186,10 @@ public final class TrayMenuController: NSObject, NSMenuDelegate {
     }
 
     /// Lists every installed widget with a check for the visible ones, so a hidden widget can
-    /// be shown again from here. Rebuilt only when the list changes and never while the menu
-    /// is open (replacing items under the cursor makes the menu flicker and drops clicks).
+    /// be shown again from here. Visibility is deliberately the only per-widget control in the
+    /// menu bar: the Widget Library owns installing, removing and placement, and the submenu
+    /// ends with a link to it. Rebuilt only when the list changes and never while the menu is
+    /// open (replacing items under the cursor makes the menu flicker and drops clicks).
     private func refreshActiveWidgets() {
         guard let submenu = activeWidgetsSubmenu, !isMenuOpen else { return }
         let ids = host.widgetIDs
@@ -200,15 +202,27 @@ public final class TrayMenuController: NSObject, NSMenuDelegate {
             let empty = NSMenuItem(title: "No widgets installed", action: nil, keyEquivalent: "")
             empty.isEnabled = false
             submenu.addItem(empty)
-            return
+        } else {
+            for id in ids {
+                let item = NSMenuItem(title: Self.displayName(for: id), action: #selector(toggleWidget(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = id
+                item.state = host.settings(for: id).hidden ? .off : .on
+                submenu.addItem(item)
+            }
         }
-        for id in ids {
-            let item = NSMenuItem(title: Self.displayName(for: id), action: #selector(toggleWidget(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = id
-            item.state = host.settings(for: id).hidden ? .off : .on
-            submenu.addItem(item)
-        }
+        // The list is a shortcut for the one thing that is worth doing without leaving the menu
+        // bar — showing or hiding a widget. Everything else (installing, removing, placement)
+        // lives in the Widget Library, and the item says so rather than leaving the user to
+        // guess which surface is authoritative.
+        submenu.addItem(.separator())
+        let manage = NSMenuItem(
+            title: "Manage in Widget Library…",
+            action: #selector(openLibrary),
+            keyEquivalent: ""
+        )
+        manage.target = self
+        submenu.addItem(manage)
     }
 
     /// `liquid-glass-calendar-widget-index-jsx` → `liquid glass calendar`.

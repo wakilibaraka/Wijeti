@@ -22,25 +22,29 @@ public final class WidgetLibraryWindow: NSWindowController, NSWindowDelegate {
         self.model = model
         // The SwiftUI view is the window's content; the controller keeps the model alive.
         let view = WidgetLibraryView(model: model)
-        let hosting = NSHostingController(rootView: view)
+        // The window's size governs the layout, not the SwiftUI content's ideal size: the
+        // gallery, the sidebar and the preview all adapt to whatever the window gives them.
+        let hosting = FixedSizedHostingController(rootView: view)
+        hosting.sizingOptions = []
         let window = NSWindow(contentViewController: hosting)
         window.title = "Widget Library"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        // Chrome: the sidebar's material runs to the top edge, so the title bar is only a
-        // drag surface and the sidebar toggle.
+        // The sidebar material extends beneath the transparent title bar, while the content
+        // panes keep their own opaque system backgrounds.
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.toolbarStyle = .unified
-        // The sidebar samples the desktop through the window, so the window itself must not
-        // be opaque. The content and detail panes paint their own background, so the sidebar
-        // is the only translucent surface.
-        // Opaque: a clear window left the title bar and traffic-light strip see-through.
         window.isOpaque = true
         window.backgroundColor = .windowBackgroundColor
         window.isReleasedWhenClosed = false
         super.init(window: window)
         window.delegate = self
-        window.setContentSize(NSSize(width: 1440, height: 880))
+        // Opens wide enough for three columns, but the minimum stays low so a half-screen tile
+        // on a 1280-point display is still usable — below the side-by-side width the view folds
+        // the sidebar away and shows one content pane at a time.
+        window.setContentSize(NSSize(width: 1180, height: 760))
+        window.minSize = AppMetrics.libraryMinimum
+        pinHostingViewToWindowContent(window)
         window.center()
     }
 
@@ -51,12 +55,11 @@ public final class WidgetLibraryWindow: NSWindowController, NSWindowDelegate {
         model.stopPreview()
     }
 
-    /// Loads the model before the window is on screen, then seeds a selection so the preview
+    /// Refreshes the model before the window is on screen, then seeds a selection so the preview
     /// pane is never dead space.
     ///
-    /// `WidgetLibraryModel.init` deliberately does not touch the disk, so without this the
-    /// window opens with an empty catalog and an empty installed list — it only filled in
-    /// after the user happened to trigger an action that called `reload()`.
+    /// The catalog is loaded at model creation and refreshed on show so changed bundles and
+    /// the server's latest installed-widget state are reflected when the window opens.
     @MainActor
     public override func showWindow(_ sender: Any?) {
         model.loadCatalog()
@@ -199,6 +202,17 @@ public final class WidgetLibraryWindow: NSWindowController, NSWindowDelegate {
     @MainActor
     public var chromeSummary: String {
         WindowSnapshot.chromeSummary(of: window)
+    }
+
+    /// Layout check for `--capture-ui`: where the hosted preview web view actually ended up.
+    /// The preview is a real `WKWebView` inside SwiftUI, and a stale or oversized frame there
+    /// is invisible in a code review but obvious in a capture.
+    @MainActor
+    public var previewFrameSummary: String {
+        let web = model.previewController.webViewController.webView
+        let windowFrame = window.map { NSStringFromRect($0.contentLayoutRect) } ?? "nil"
+        let superview = web.superview.map { NSStringFromRect($0.frame) } ?? "nil"
+        return "window=\(windowFrame) super=\(superview) web=\(NSStringFromRect(web.frame)) bounds=\(NSStringFromRect(web.bounds))"
     }
 }
 

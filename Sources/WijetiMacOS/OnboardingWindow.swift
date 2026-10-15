@@ -4,41 +4,57 @@ import WijetiCore
 
 /// First-launch onboarding surface.
 ///
-/// A stepped, card-style introduction: each page pairs a colourful symbol card with a
-/// title and short body, a step-dots indicator tracks progress, and the final step
-/// covers permissions/data sources before dismissing into the Widget Library.
+/// One screen: what Wijeti is, where widget management lives, and a way straight into the Widget
+/// Library. Earlier versions walked through a three-step feature tour that then repeated
+/// permission prompts and the launch-at-login switch — both of which also live in Settings — so
+/// the tour delayed the actual task (browsing widgets) and gave nobody a way to see it again.
+/// Setup that belongs to Settings stays in Settings; this window only has to hand the user the
+/// library.
 ///
-/// Once dismissed, it is never shown again for that user (stored in `UserDefaults`).
+/// Once dismissed it is not shown again for that user (stored in `UserDefaults`), but
+/// `show(force: true)` replays it on demand from Settings → General.
 public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private let host: HostApp
+    private let allowsCompletedOnboarding: Bool
 
     /// The key under which we store the fact that onboarding has been seen.
     public static let didCompleteKey = "OnboardingDidComplete"
 
-    public init(host: HostApp) {
+    public init(host: HostApp, allowsCompletedOnboarding: Bool = false) {
         self.host = host
+        self.allowsCompletedOnboarding = allowsCompletedOnboarding
         super.init()
     }
 
+    /// Shows the window on first launch, or on demand when `force` is true (the replay path
+    /// from Settings). `allowsCompletedOnboarding` is the `--capture-ui` escape hatch, which
+    /// draws the window even though a real user has already dismissed it.
     @MainActor
-    public func show() {
-        // Only surface on first launch. After that this controller is a no-op.
-        guard !UserDefaults.standard.bool(forKey: Self.didCompleteKey) else { return }
+    public func show(force: Bool = false) {
+        guard force || allowsCompletedOnboarding || !UserDefaults.standard.bool(forKey: Self.didCompleteKey) else { return }
 
         if window == nil {
-            let content = OnboardingView(host: host) { [weak self] in
-                self?.dismiss()
+            let content = OnboardingView { [weak self] openLibrary in
+                self?.dismiss(openLibrary: openLibrary)
             }
-            let hosting = NSHostingController(rootView: content)
+            // The window's size governs the layout, not the SwiftUI content's ideal size: the
+            // tour must fill its window at any size rather than push it around.
+            let hosting = FixedSizedHostingController(rootView: content)
+            hosting.sizingOptions = []
             let window = NSWindow(contentViewController: hosting)
             window.title = "Welcome to Wijeti"
-            window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
+            // Standard resizable chrome, like every other window: no custom controls to learn
+            // and macOS tiling, zoom and minimize keep working.
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.isReleasedWhenClosed = false
             window.delegate = self
-            window.titlebarAppearsTransparent = true
-            window.titleVisibility = .hidden
-            window.isMovableByWindowBackground = true
+            window.titlebarAppearsTransparent = false
+            window.titleVisibility = .visible
+            window.isMovableByWindowBackground = false
+            window.minSize = AppMetrics.onboardingMinimum
+            window.setContentSize(NSSize(width: 640, height: 540))
+            pinHostingViewToWindowContent(window)
             self.window = window
         }
 
@@ -58,9 +74,7 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
             window.center()
             return
         }
-        let size = window.frameRect(forContentRect: NSRect(
-            x: 0, y: 0, width: 640, height: 600
-        )).size
+        let size = window.frame.size
         let origin = NSPoint(
             x: visible.midX - size.width / 2,
             y: visible.midY - size.height / 2
@@ -68,28 +82,31 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         window.setFrameTopLeftPoint(NSPoint(x: origin.x, y: origin.y + size.height))
     }
 
-    /// Closing with the red button counts as finishing; otherwise the wizard would reappear on
+    /// Closing with the red button counts as finishing; otherwise the window would reappear on
     /// every launch. `windowShouldClose` fires only for a close the user asked for, not when the
-    /// app quits underneath the open wizard.
+    /// app quits underneath the open window.
     @MainActor
     public func windowShouldClose(_ sender: NSWindow) -> Bool {
         UserDefaults.standard.set(true, forKey: Self.didCompleteKey)
         return true
     }
 
-    /// Renders the wizard for `--capture-ui`; `step` picks which page (0 welcome, 1 features, 2 permissions).
+    /// Renders the window for `--capture-ui`.
     @MainActor
     public func snapshotWindowImage() -> NSImage? {
         WindowSnapshot.capture(window)
     }
 
+    /// `openLibrary` is false for "Maybe Later": the tour is optional, and dismissing it must not
+    /// hijack the desktop with a window the user did not ask for.
     @MainActor
-    private func dismiss() {
+    private func dismiss(openLibrary: Bool) {
         UserDefaults.standard.set(true, forKey: Self.didCompleteKey)
         window?.performClose(nil)
+        guard openLibrary else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            // Open the widgets library automatically so the first-launch path ends on the
-            // place where the user actually picks widgets, not back on the desktop.
+            // Open the widgets library so the first-launch path ends where the user actually
+            // picks widgets, not back on the desktop.
             self?.openLibraryAfterOnboarding()
         }
     }
@@ -109,269 +126,121 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
 // MARK: - SwiftUI onboarding view
 
-@MainActor
-private final class OnboardingViewModel: ObservableObject {
-    enum Step: Int, CaseIterable { case welcome, features, permissions }
-
-    @Published var step: Step = .welcome
-
-    var isFirst: Bool { step == .welcome }
-    var isLast: Bool { step == .permissions }
-
-    func advance() {
-        if let next = Step(rawValue: step.rawValue + 1) { step = next }
-    }
-
-    func back() {
-        if let previous = Step(rawValue: step.rawValue - 1) { step = previous }
-    }
-}
-
-private struct FeatureCard: Identifiable {
+private struct OnboardingPoint: Identifiable {
     let id = UUID()
     let symbol: String
-    let tint: Color
     let title: String
     let detail: String
 }
 
-private let featureCards: [FeatureCard] = [
-    FeatureCard(symbol: "square.grid.2x2.fill", tint: .orange, title: "Widget Library",
-                detail: "Browse bundled widgets, preview them live, install in one click. Drop in your own folder, .jsx or .zip."),
-    FeatureCard(symbol: "cloud.sun.fill", tint: .cyan, title: "Weather without keys",
-                detail: "Open-Meteo powers the weather widgets: no account, no API key, no signup."),
-    FeatureCard(symbol: "menubar.rectangle", tint: .indigo, title: "Menu bar control",
-                detail: "Show, hide and refresh widgets from the tray. ⌘L opens the library, ⌘, opens Settings."),
-    FeatureCard(symbol: "lock.shield.fill", tint: .green, title: "Runs in its own process",
-                detail: "Widgets run in a separate bundled server and web views. Nothing is installed system-wide."),
+private let onboardingPoints: [OnboardingPoint] = [
+    OnboardingPoint(
+        symbol: "square.grid.2x2",
+        title: "Browse a live widget library",
+        detail: "Preview every bundled widget and add it to your desktop in one click."
+    ),
+    OnboardingPoint(
+        symbol: "menubar.rectangle",
+        title: "Live in the menu bar",
+        detail: "Wijeti stays out of the Dock. ⌘L opens the library, ⌘, opens Settings."
+    ),
+    OnboardingPoint(
+        symbol: "lock.shield",
+        title: "No system-wide install",
+        detail: "Widgets run in a bundled server in their own process, and permissions are optional — you can review them in Settings → Permissions any time."
+    ),
 ]
 
-/// A status pill: `Granted`, `Not Determined`, `Denied`, or `Check in Settings`.
-struct PermissionBadge: View {
-    let status: PermissionStatus
-
-    private var color: Color {
-        switch status {
-        case .granted: return .green
-        case .denied: return .red
-        case .notDetermined: return .orange
-        case .unknown: return .secondary
-        }
-    }
-
-    private var symbol: String {
-        switch status {
-        case .granted: return "checkmark.circle.fill"
-        case .denied: return "xmark.circle.fill"
-        case .notDetermined: return "questionmark.circle.fill"
-        case .unknown: return "gearshape.fill"
-        }
-    }
-
-    var body: some View {
-        Label(status.label, systemImage: symbol)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(color)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(color.opacity(0.14)))
-            .accessibilityLabel("Status: \(status.label)")
-    }
-}
-
-private struct OnboardingPermissionsView: View {
-    @StateObject private var probe = PermissionProbe()
-
-    private var kinds: [PermissionSpec] { PermissionCatalog.specs(in: .essentials) }
+struct OnboardingView: View {
+    /// Called with whether the library should open once the tour is dismissed.
+    let onFinish: (Bool) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            ForEach(Array(kinds.enumerated()), id: \.element.id) { index, kind in
-                row(kind)
-                if index < kinds.count - 1 { Divider().padding(.leading, 14) }
+            ScrollView {
+                VStack(spacing: AppMetrics.paneGutter + 4) {
+                    hero
+                    VStack(spacing: 6) {
+                        Text("Welcome to Wijeti")
+                            .font(.largeTitle.weight(.bold))
+                        Text("A home for useful, live widgets on your Mac desktop.")
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(onboardingPoints.enumerated()), id: \.element.id) { index, point in
+                            pointRow(point)
+                            if index < onboardingPoints.count - 1 {
+                                Divider().padding(.leading, 46)
+                            }
+                        }
+                    }
+                    .appCardSurface()
+                }
+                .frame(maxWidth: 520)
+                .padding(.horizontal, AppMetrics.windowGutter)
+                .padding(.top, AppMetrics.windowGutter + 6)
+                .padding(.bottom, AppMetrics.paneGutter)
+                .frame(maxWidth: .infinity)
             }
+            footer
         }
-        .background(RoundedRectangle(cornerRadius: 12).fill(.background.opacity(0.6)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator, lineWidth: 0.5))
-        .onAppear { probe.refresh() }
+        .background(AppColor.windowSurface)
     }
 
-    private func row(_ kind: PermissionSpec) -> some View {
-        let status = probe.status(for: kind)
-        return HStack(alignment: .center, spacing: 12) {
+    /// The one branded moment in the app: a restrained accent gradient behind the app glyph.
+    private var hero: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(AppGradient.brand)
+            Image(systemName: "square.on.square.dashed")
+                .font(.system(size: 42, weight: .light))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.white)
+        }
+        .frame(width: 104, height: 104)
+        .accessibilityHidden(true)
+    }
+
+    private func pointRow(_ point: OnboardingPoint) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: point.symbol)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(AppTone.accent.color)
+                .frame(width: 22, height: 22)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text(kind.title).font(.callout.weight(.semibold))
-                Text(kind.reason)
+                Text(point.title)
+                    .font(.callout.weight(.semibold))
+                Text(point.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 8)
-            PermissionBadge(status: status)
-            Button(probe.actionTitle(for: kind)) {
-                probe.request(kind)
-            }
-            .controlSize(.small)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-    }
-}
-
-struct OnboardingView: View {
-    let host: HostApp
-    let onDismiss: () -> Void
-    @StateObject private var viewModel = OnboardingViewModel()
-    /// Asked for here as well as in Settings: "launch at login" is the difference between the
-    /// widgets being there tomorrow and not.
-    @State private var launchAtLogin = LoginItem.isEnabled
-    @State private var needsLoginItemApproval = false
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Group {
-                switch viewModel.step {
-                case .welcome: welcome
-                case .features: features
-                case .permissions: permissions
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .transition(.opacity)
-
-            footer
-        }
-        .frame(width: 640, height: 600)
-        .background(.regularMaterial)
-    }
-
-    // MARK: Steps
-
-    private var welcome: some View {
-        VStack(spacing: 18) {
-            Image(systemName: "square.on.square.dashed")
-                .font(.system(size: 52, weight: .light))
-                .foregroundStyle(.tint)
-                .symbolRenderingMode(.hierarchical)
-            Text("Welcome to Wijeti")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
-            Text("Beautiful desktop widgets for your Mac, written in plain HTML and JavaScript. "
-                 + "Install one from the library and it appears on your desktop. There's nothing to configure first.")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .lineSpacing(3)
-                .frame(maxWidth: 460)
-        }
-        .padding(.top, 56)
-    }
-
-    private var features: some View {
-        VStack(spacing: 20) {
-            Text("What you get")
-                .font(.system(size: 24, weight: .bold, design: .rounded))
-                .padding(.top, 44)
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)], spacing: 14) {
-                ForEach(featureCards) { card in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Image(systemName: card.symbol)
-                            .font(.title2)
-                            .foregroundStyle(card.tint)
-                        Text(card.title).font(.headline)
-                        Text(card.detail)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(.background.opacity(0.6)))
-                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.separator, lineWidth: 0.5))
-                }
-            }
-            .padding(.horizontal, 28)
             Spacer(minLength: 0)
         }
+        .padding(.horizontal, AppMetrics.cardPadding)
+        .padding(.vertical, 12)
     }
-
-    private var permissions: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("A few optional permissions")
-                    .font(.system(size: 24, weight: .bold, design: .rounded))
-                Text("Wijeti itself needs almost nothing. These are for widgets that use them, "
-                     + "and you can change any of them later in System Settings.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                OnboardingPermissionsView()
-                loginItemCard
-            }
-            .padding(.horizontal, 28)
-            .padding(.top, 40)
-            .padding(.bottom, 12)
-        }
-    }
-
-    private var loginItemCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle("Launch Wijeti at login", isOn: $launchAtLogin)
-                .font(.callout.weight(.semibold))
-                .onChange(of: launchAtLogin) { _, wanted in
-                    let achieved = LoginItem.setEnabled(wanted)
-                    if wanted && !achieved { needsLoginItemApproval = true }
-                    if achieved != wanted { launchAtLogin = achieved }
-                }
-            if needsLoginItemApproval && !launchAtLogin {
-                Text("Approve Wijeti in System Settings → General → Login Items.")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-            Text("Wijeti stays out of the Dock. Its menu bar icon is where it lives.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(.background.opacity(0.6)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator, lineWidth: 0.5))
-    }
-
-    // MARK: Pinned footer
 
     private var footer: some View {
         VStack(spacing: 0) {
             Divider()
-            HStack(spacing: 14) {
-                HStack(spacing: 6) {
-                    ForEach(OnboardingViewModel.Step.allCases, id: \.rawValue) { step in
-                        Circle()
-                            .fill(step == viewModel.step ? Color.accentColor : Color.secondary.opacity(0.3))
-                            .frame(width: 7, height: 7)
-                    }
-                }
-                .accessibilityHidden(true)
-
-                Spacer()
-
-                if !viewModel.isFirst {
-                    Button("Back") { withAnimation(.easeInOut(duration: 0.2)) { viewModel.back() } }
-                        .controlSize(.large)
-                }
-
-                if viewModel.isLast {
-                    Button("Get Started") { onDismiss() }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .keyboardShortcut(.defaultAction)
-                } else {
-                    Button("Continue") { withAnimation(.easeInOut(duration: 0.2)) { viewModel.advance() } }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .keyboardShortcut(.defaultAction)
-                }
+            HStack(alignment: .center, spacing: 12) {
+                Text("You can see this tour again from Settings → General.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button("Maybe Later") { onFinish(false) }
+                    .buttonStyle(.bordered)
+                Button("Open Widget Library") { onFinish(true) }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
             }
-            .padding(.horizontal, 24)
+            .padding(.horizontal, AppMetrics.windowGutter)
             .padding(.vertical, 14)
         }
     }

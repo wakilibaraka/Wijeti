@@ -4,12 +4,11 @@ import WijetiCore
 
 // MARK: - Library view
 
-/// The Widget Library window's content: navigation on the left, a browsable grid in the middle and
-/// an inspector for the selected widget on the right.
+/// The Widget Library window's content: a native navigation sidebar, searchable widget gallery,
+/// and an inspector that stays beside the live preview.
 ///
-/// One job per region. The sidebar only chooses *what to browse*; the grid only *discovers and adds*
-/// (one button per card); anything that *manages* an installed widget (visibility, layer, screens,
-/// remove) lives in the Installed list or the inspector, never on the discovery cards.
+/// The sidebar navigates; the gallery previews and installs; the inspector manages installed
+/// widgets. System controls handle the title bar, toolbar, selection, and search.
 struct WidgetLibraryView: View {
     @ObservedObject var model: WidgetLibraryModel
 
@@ -19,15 +18,29 @@ struct WidgetLibraryView: View {
         case category(String)
     }
 
-    private static let gutter: CGFloat = 16
-    private static let radius: CGFloat = 12
+    // Shared metrics: the library uses the same spacing and radii as Settings and onboarding.
+    private static let gutter = AppMetrics.paneGutter
+    private static let radius = AppMetrics.cardRadius
+    private static let cardRadius = AppMetrics.smallRadius
 
     @AppStorage("library.viewMode") private var viewMode = "grid"
     @AppStorage("library.sidebarCollapsed") private var sidebarCollapsed = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// The window's content width, used to decide whether the gallery and the preview can share
+    /// the row or whether one has to take over the content area.
+    @State private var contentWidth: CGFloat = 1400
+    /// True while the sidebar was folded away by the narrow layout rather than by the user, so
+    /// widening the window restores it without overruling a manual choice.
+    @State private var autoCollapsedSidebar = false
 
     private var showsInspector: Bool {
         model.selectMode || model.selectedPreset != nil || model.selectedCustomFolder != nil
+    }
+
+    /// A half-screen tile (or any narrow window) cannot hold a category sidebar, the gallery and
+    /// the preview at once. Below this width the layout keeps a single content pane.
+    private var isCompact: Bool {
+        contentWidth > 0 && contentWidth < AppMetrics.librarySideBySideMinimum
     }
 
     var body: some View {
@@ -35,22 +48,93 @@ struct WidgetLibraryView: View {
             sidebar
                 .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 260)
         } detail: {
-            HStack(spacing: 0) {
-                browser
-                if showsInspector {
-                    Divider()
-                    inspector
-                        .frame(minWidth: 480, idealWidth: 560, maxWidth: 680)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
-                }
+            // The pane layout is driven from a measured box rather than from the column's own
+            // proposal: the hosted preview is a real `WKWebView`, and handing it an unbounded
+            // height let it size itself to its page content (measured at 1195pt tall inside a
+            // 520pt window) and paint over the rest of the window.
+            GeometryReader { proxy in
+                detailContent(in: proxy.size)
             }
-            .background(Color(nsColor: .windowBackgroundColor))
-            .animation(.easeInOut(duration: 0.2), value: showsInspector)
+            .background(AppColor.windowSurface)
         }
         .navigationSplitViewStyle(.balanced)
-        .onAppear { columnVisibility = sidebarCollapsed ? .detailOnly : .all }
-        .onChange(of: columnVisibility) { _, value in sidebarCollapsed = (value == .detailOnly) }
-        .frame(minWidth: 1100, minHeight: 640)
+        .searchable(text: $model.search, placement: .toolbar, prompt: "Search widgets")
+        .background(widthReader)
+        .onChange(of: contentWidth) { _, _ in updateLayoutForWidth() }
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    withAnimation { columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly }
+                } label: {
+                    Image(systemName: "sidebar.left")
+                }
+                .help(columnVisibility == .detailOnly ? "Show categories" : "Hide categories")
+                .accessibilityLabel(columnVisibility == .detailOnly ? "Show categories" : "Hide categories")
+            }
+            ToolbarItemGroup(placement: .primaryAction) {
+                Picker("Widget layout", selection: $viewMode) {
+                    Image(systemName: "square.grid.2x2").tag("grid")
+                    Image(systemName: "list.bullet").tag("list")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 76)
+                .help("Switch between grid and list")
+
+                if model.selectMode {
+                    Button("Done") { model.exitSelectMode() }
+                        .keyboardShortcut(.escape, modifiers: [])
+                } else {
+                    Button("Select") {
+                        model.selectedPreset = nil
+                        model.selectedCustomFolder = nil
+                        model.selectMode = true
+                    }
+                    .help("Select several widgets to manage them together")
+                }
+
+                Button {
+                    model.chooseFilesToImport()
+                } label: {
+                    Label("Import Widget", systemImage: "plus")
+                }
+                .help("Add your own widgets: .zip, folders, .jsx, .js, .coffee or .html files")
+
+                Menu {
+                    if columnVisibility == .detailOnly {
+                        Button("All Widgets") { model.selectedCategory = nil; model.showRecentFirst = false }
+                        Button("Installed") { model.selectedCategory = nil; model.showRecentFirst = true }
+                        Divider()
+                        ForEach(model.categories, id: \.self) { category in
+                            Button(category) { model.selectedCategory = category; model.showRecentFirst = false }
+                        }
+                        Divider()
+                    }
+                    Button("Select All") { selectAll(items) }
+                        .keyboardShortcut("a", modifiers: .command)
+                    Divider()
+                    Button("Show All Widgets") { model.enableAllVisibleNow() }
+                        .disabled(model.installed.isEmpty)
+                    Button("Hide All Widgets") { model.disableAllNow() }
+                        .disabled(model.installed.isEmpty)
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .help("More widget actions")
+                .accessibilityLabel("More widget actions")
+            }
+        }
+        .onAppear {
+            columnVisibility = sidebarCollapsed ? .detailOnly : .all
+            updateLayoutForWidth()
+        }
+        .onChange(of: columnVisibility) { _, value in
+            // Only a change the user made is remembered as their preference.
+            guard !autoCollapsedSidebar || value == .all else { return }
+            sidebarCollapsed = (value == .detailOnly)
+        }
+        .frame(minWidth: AppMetrics.libraryMinimum.width, minHeight: AppMetrics.libraryMinimum.height)
+        .background(AppColor.windowSurface)
         .onDrop(of: [.fileURL], isTargeted: $model.isDropTargeted) { providers in
             handleDrop(providers)
         }
@@ -71,6 +155,69 @@ struct WidgetLibraryView: View {
         } message: {
             Text(model.popupMessage)
         }
+    }
+
+    // MARK: Adaptation
+
+    /// Reports the content width, so the layout can react to a tiled or resized window.
+    private var widthReader: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .onAppear { contentWidth = proxy.size.width }
+                .onChange(of: proxy.size.width) { _, width in contentWidth = width }
+        }
+    }
+
+    /// Folds the category sidebar away when there is not enough width for three columns, and
+    /// restores it when the window grows again — unless the user had collapsed it themselves.
+    private func updateLayoutForWidth() {
+        guard contentWidth > 0 else { return }
+        if isCompact {
+            guard columnVisibility != .detailOnly else { return }
+            autoCollapsedSidebar = true
+            columnVisibility = .detailOnly
+        } else if autoCollapsedSidebar {
+            autoCollapsedSidebar = false
+            columnVisibility = sidebarCollapsed ? .detailOnly : .all
+        }
+    }
+
+    /// Gallery and inspector share the row when there is room; otherwise one takes over. Both
+    /// branches pin their children to a definite box, so the preview always has a bounded frame.
+    @ViewBuilder
+    private func detailContent(in size: CGSize) -> some View {
+        let width = max(size.width, 1)
+        let height = max(size.height, 1)
+        if isCompact {
+            if showsInspector {
+                inspector
+                    .frame(width: width, height: height)
+            } else {
+                browser
+                    .frame(width: width, height: height)
+            }
+        } else {
+            HStack(spacing: 0) {
+                browser
+                if showsInspector {
+                    Divider()
+                    inspector
+                        .frame(width: min(max(width * 0.42, 420), 680), height: height)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+            .frame(width: width, height: height)
+            .animation(.easeInOut(duration: 0.2), value: showsInspector)
+        }
+    }
+
+    /// Leaves the preview/management pane and returns to the gallery — the compact layout shows
+    /// one pane at a time, so there has to be a way back.
+    private func closeInspector() {
+        model.selectMode = false
+        model.selection.clear()
+        model.selectedPreset = nil
+        model.selectedCustomFolder = nil
     }
 
     // MARK: Sidebar
@@ -100,14 +247,15 @@ struct WidgetLibraryView: View {
 
     private var sidebar: some View {
         List(selection: source) {
-            Section {
-                Label("All Widgets", systemImage: "square.grid.2x2").tag(Source.all)
+            Section("Library") {
+                Label("All Widgets", systemImage: "square.grid.2x2")
+                    .tag(Source.all)
                 Label {
                     HStack {
                         Text("Installed")
                         Spacer()
                         Text("\(model.installed.count)")
-                            .font(.caption)
+                            .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
                 } icon: {
@@ -115,7 +263,7 @@ struct WidgetLibraryView: View {
                 }
                 .tag(Source.installed)
             }
-            Section("Categories") {
+            Section("Browse by category") {
                 ForEach(model.categories, id: \.self) { category in
                     Label(category, systemImage: Self.symbol(forCategory: category))
                         .tag(Source.category(category))
@@ -124,8 +272,6 @@ struct WidgetLibraryView: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
-        // Keep the first row clear of the traffic lights (the title bar is transparent).
-        .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: 28) }
         .background(VisualEffectView(material: .sidebar, blendingMode: .withinWindow))
     }
 
@@ -215,101 +361,37 @@ struct WidgetLibraryView: View {
     }
 
     private func header(_ items: [LibraryItem]) -> some View {
-        HStack(spacing: 10) {
-            Button {
-                withAnimation { columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly }
-            } label: {
-                Image(systemName: "sidebar.left")
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(title)
+                    .font(.title2.weight(.semibold))
+                Spacer(minLength: 8)
+                Text("\(items.count)")
+                    .font(.callout.monospacedDigit().weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(Color.secondary.opacity(0.1), in: Capsule())
+                    .accessibilityLabel("\(items.count) widgets")
             }
-            .buttonStyle(.plain)
-            .help(columnVisibility == .detailOnly ? "Show categories" : "Hide categories")
-            .keyboardShortcut("s", modifiers: [.command, .control])
-
-            Text(title)
-                .font(.title2.weight(.semibold))
-            if columnVisibility == .detailOnly {
-                Menu {
-                    Button("All Widgets") { model.selectedCategory = nil; model.showRecentFirst = false }
-                    Button("Installed") { model.selectedCategory = nil; model.showRecentFirst = true }
-                    Divider()
-                    ForEach(model.categories, id: \.self) { category in
-                        Button(category) { model.selectedCategory = category; model.showRecentFirst = false }
-                    }
-                } label: {
-                    Image(systemName: "chevron.down.circle")
+            HStack(spacing: 8) {
+                if model.showRecentFirst {
+                    Label("Your widgets", systemImage: "checkmark.circle")
+                } else if let category = model.selectedCategory {
+                    Label(category, systemImage: Self.symbol(forCategory: category))
+                } else {
+                    Label("Explore the library", systemImage: "sparkles")
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("Browse categories")
+                Text("·")
+                Text(model.search.isEmpty ? "Select a widget to preview it" : "Results update as you type")
             }
-            Spacer(minLength: 8)
-
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search", text: $model.search)
-                    .textFieldStyle(.plain)
-                    .frame(minWidth: 70, maxWidth: 120)
-                if !model.search.isEmpty {
-                    Button { model.search = "" } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.12)))
-
-            Picker("View", selection: $viewMode) {
-                Image(systemName: "square.grid.2x2").tag("grid")
-                Image(systemName: "list.bullet").tag("list")
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 76)
-            .help("Switch between grid and list")
-
-            if model.selectMode {
-                Button("Done") { model.exitSelectMode() }
-                    .keyboardShortcut(.escape, modifiers: [])
-            } else {
-                Button("Select") {
-                    model.selectedPreset = nil
-                    model.selectedCustomFolder = nil
-                    model.selectMode = true
-                }
-                .help("Select several widgets to manage them together")
-            }
-
-            Button {
-                model.chooseFilesToImport()
-            } label: {
-                Label("Add Widget", systemImage: "plus")
-                    .fixedSize()
-            }
-            .buttonStyle(.borderedProminent)
-            .help("Add your own widgets: .zip, folders, .jsx, .js, .coffee or .html files")
-
-            Menu {
-                Button("Select All") { selectAll(items) }
-                    .keyboardShortcut("a", modifiers: .command)
-                Divider()
-                Button("Show All Widgets") { model.enableAllVisibleNow() }
-                    .disabled(model.installed.isEmpty)
-                Button("Hide All Widgets") { model.disableAllNow() }
-                    .disabled(model.installed.isEmpty)
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("More actions")
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
         .padding(.horizontal, Self.gutter)
-        .padding(.top, 14)
-        .padding(.bottom, 12)
+        .padding(.top, 18)
+        .padding(.bottom, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func selectAll(_ items: [LibraryItem]) {
@@ -350,28 +432,35 @@ struct WidgetLibraryView: View {
     private func leadingIcon(_ item: LibraryItem) -> some View {
         let chosen = model.selection.contains(item.key)
         return ZStack {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.accentColor.opacity(model.selectMode && chosen ? 0.9 : 0.14))
+            RoundedRectangle(cornerRadius: Self.cardRadius)
+                .fill(model.selectMode && chosen ? Color.accentColor : Color.accentColor.opacity(0.12))
             Image(systemName: model.selectMode
                 ? (chosen ? "checkmark" : "circle")
                 : Self.symbol(forCategory: item.category))
-                .font(.title3)
+                .font(.system(size: 17, weight: .medium))
                 .foregroundStyle(model.selectMode && chosen ? Color.white : Color.accentColor)
         }
-        .frame(width: 32, height: 32)
+        .frame(width: 38, height: 38)
+        .accessibilityHidden(true)
     }
 
     @ViewBuilder
     private func statusView(_ item: LibraryItem) -> some View {
         if let widget = item.widget {
-            Label(widget.visible ? "Installed" : "Hidden",
-                  systemImage: widget.visible ? "checkmark.circle.fill" : "eye.slash")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(widget.visible ? Color.green : Color.secondary)
+            AppStatusBadge(
+                text: widget.visible ? "Installed" : "Hidden",
+                tone: widget.visible ? .positive : .neutral,
+                symbol: widget.visible ? "checkmark.circle.fill" : "eye.slash"
+            )
         } else if let preset = item.preset {
-            Button("Add") { model.doInstall(preset) }
-                .controlSize(.small)
-                .buttonStyle(.borderedProminent)
+            Button {
+                model.doInstall(preset)
+            } label: {
+                Label("Install", systemImage: "arrow.down.to.line")
+            }
+            .controlSize(.small)
+            .buttonStyle(.bordered)
+            .help("Install \(preset.title) on your desktop")
         }
     }
 
@@ -400,7 +489,9 @@ struct WidgetLibraryView: View {
     // MARK: Grid
 
     private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: 220, maximum: 320), spacing: Self.gutter)]
+        // Wide enough that a tiled window gets two comfortable columns rather than three
+        // cramped ones whose titles and status badges truncate.
+        [GridItem(.adaptive(minimum: 240, maximum: 360), spacing: Self.gutter)]
     }
 
     private func gridView(_ items: [LibraryItem]) -> some View {
@@ -424,29 +515,75 @@ struct WidgetLibraryView: View {
 
     private func card(_ item: LibraryItem, in items: [LibraryItem]) -> some View {
         let selected = isSelected(item)
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top) {
-                leadingIcon(item)
-                Spacer()
-                statusView(item)
+        return VStack(alignment: .leading, spacing: 12) {
+            Button {
+                handleTap(item, in: items)
+            } label: {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .center, spacing: 10) {
+                        leadingIcon(item)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.title)
+                                .font(.headline)
+                                .lineLimit(1)
+                            Text(item.category)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 4)
+                        if item.widget != nil { statusView(item) }
+                    }
+                    Text(item.subtitle)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
+                    HStack {
+                        if selected {
+                            Label(model.selectMode ? "Selected" : "Previewing", systemImage: "checkmark.circle.fill")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.tint)
+                        } else {
+                            Text("Preview widget")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 4)
+                        Image(systemName: "arrow.up.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
+                .contentShape(Rectangle())
             }
-            Text(item.title).font(.headline).lineLimit(1)
-            Text(item.subtitle)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Preview \(item.title)")
+            .accessibilityHint("Shows a live preview and widget options")
+
+            HStack {
+                Text(item.isCustom ? "YOUR WIDGET" : "WIDGET")
+                    .font(.caption2.weight(.semibold))
+                    .tracking(0.6)
+                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 8)
+                if item.widget == nil { statusView(item) }
+            }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 130, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: Self.radius).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 172, alignment: .topLeading)
+        .background(
             RoundedRectangle(cornerRadius: Self.radius)
-                .strokeBorder(selected ? Color.accentColor : Color.primary.opacity(0.08), lineWidth: selected ? 2 : 1)
+                .fill(AppColor.surface)
         )
+        .overlay {
+            RoundedRectangle(cornerRadius: Self.radius)
+                .strokeBorder(selected ? AppColor.selectedBorder : AppColor.border,
+                              lineWidth: selected ? 1.5 : 1)
+        }
         .contentShape(RoundedRectangle(cornerRadius: Self.radius))
-        .onTapGesture { handleTap(item, in: items) }
         .contextMenu { itemMenu(item) }
     }
 
@@ -460,8 +597,8 @@ struct WidgetLibraryView: View {
                     if index < items.count - 1 { Divider().padding(.leading, 58) }
                 }
             }
-            .background(RoundedRectangle(cornerRadius: Self.radius).fill(Color(nsColor: .controlBackgroundColor)))
-            .overlay(RoundedRectangle(cornerRadius: Self.radius).strokeBorder(Color.primary.opacity(0.08)))
+            .background(RoundedRectangle(cornerRadius: Self.radius).fill(AppColor.surface))
+            .overlay(RoundedRectangle(cornerRadius: Self.radius).strokeBorder(AppColor.border))
             .padding(Self.gutter)
         }
     }
@@ -480,11 +617,11 @@ struct WidgetLibraryView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
-            if let widget = item.widget {
-                switches(widget)
-            }
+            // No inline switches here: the inspector beside the preview is the one place a
+            // widget's show/hide, placement and screen settings are changed, so the same
+            // widget is not represented by two competing sets of controls.
             statusView(item)
-                .frame(minWidth: 70, alignment: .trailing)
+                .fixedSize()
             if let widget = item.widget {
                 Menu { installedMenu(widget) } label: { Image(systemName: "ellipsis") }
                     .menuStyle(.borderlessButton)
@@ -519,29 +656,6 @@ struct WidgetLibraryView: View {
         Button("Reveal in Finder") { model.revealOnDisk(widget) }
         Divider()
         Button("Remove…", role: .destructive) { model.confirmRemove(widget) }
-    }
-
-    /// The three per-widget switches. Shown only where a widget is being *managed*.
-    private func switches(_ widget: WidgetLibraryModel.Installed) -> some View {
-        HStack(spacing: 14) {
-            Toggle("Visible", isOn: Binding(
-                get: { widget.visible },
-                set: { model.setVisible($0, for: widget.id) }
-            ))
-            Toggle("Behind", isOn: Binding(
-                get: { widget.inBackground },
-                set: { model.setInBackground($0, for: widget.id) }
-            ))
-            Toggle("All screens", isOn: Binding(
-                get: { widget.onAllScreens },
-                set: { model.setOnAllScreens($0, for: widget.id) }
-            ))
-        }
-        .toggleStyle(.switch)
-        .controlSize(.mini)
-        .fixedSize()
-        .font(.caption)
-        .foregroundStyle(.secondary)
     }
 
     // MARK: Empty state
@@ -590,15 +704,22 @@ struct WidgetLibraryView: View {
                 customInspector(widget)
             } else if let preset = model.selectedPreset {
                 VStack(alignment: .leading, spacing: 6) {
+                    if isCompact {
+                        backToGalleryButton
+                    }
                     HStack(alignment: .firstTextBaseline) {
                         Text(preset.title).font(.title3.weight(.semibold))
                         Spacer()
-                        Button { model.selectedPreset = nil } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        // In the compact layout the back button above already returns to the
+                        // gallery, so a second control that does the same thing is left out.
+                        if !isCompact {
+                            Button { model.selectedPreset = nil } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .keyboardShortcut(.escape, modifiers: [])
+                            .help("Close preview")
                         }
-                        .buttonStyle(.plain)
-                        .keyboardShortcut(.escape, modifiers: [])
-                        .help("Close preview")
                     }
                     Text(preset.description)
                         .font(.callout)
@@ -620,17 +741,32 @@ struct WidgetLibraryView: View {
         }
     }
 
+    /// Shown in the narrow layout, where the preview/management pane replaces the gallery.
+    private var backToGalleryButton: some View {
+        Button { closeInspector() } label: {
+            Label("Library", systemImage: "chevron.left")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.tint)
+        .help("Back to the widget gallery")
+    }
+
     @ViewBuilder
     private func customInspector(_ widget: WidgetLibraryModel.Installed) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            if isCompact {
+                backToGalleryButton
+            }
             HStack(alignment: .firstTextBaseline) {
                 Text(widget.title).font(.title3.weight(.semibold))
                 Spacer()
-                Button { model.selectedCustomFolder = nil } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                if !isCompact {
+                    Button { model.selectedCustomFolder = nil } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.escape, modifiers: [])
                 }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.escape, modifiers: [])
             }
             HStack(spacing: 6) {
                 tag(widget.category ?? "Uncategorised")
@@ -763,33 +899,29 @@ struct WidgetLibraryView: View {
     }
 
     private func tag(_ text: String) -> some View {
-        Text(text)
-            .font(.caption2.weight(.semibold))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(Color.secondary.opacity(0.14)))
+        AppChip(text: text)
     }
 
     private var preview: some View {
         ZStack {
-            LinearGradient(
-                colors: [Color(red: 0.16, green: 0.17, blue: 0.22), Color(red: 0.07, green: 0.07, blue: 0.1)],
-                startPoint: .top, endPoint: .bottom
-            )
+            AppColor.recessedSurface
             if model.previewReady {
                 PreviewWebView(controller: model.previewController.webViewController)
             } else {
-                VStack(spacing: 8) {
-                    ProgressView().controlSize(.small).tint(.white)
-                    Text(model.previewStatus.isEmpty ? "Starting preview…" : model.previewStatus)
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.7))
+                VStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text(model.previewStatus.isEmpty ? "Preparing preview…" : model.previewStatus)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
                 }
+                .padding(20)
             }
         }
-        .frame(minHeight: 360, maxHeight: .infinity)
+        .frame(minHeight: 280, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: Self.radius))
-        .overlay(RoundedRectangle(cornerRadius: Self.radius).strokeBorder(.white.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: Self.radius).strokeBorder(AppColor.border))
     }
 
     @ViewBuilder

@@ -137,7 +137,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         library = WidgetLibraryWindow(
             model: WidgetLibraryModel(host: host, presetsDirectory: platform.presetsDirectory)
         )
-        onboarding = OnboardingWindowController(host: host)
+        onboarding = OnboardingWindowController(
+            host: host,
+            allowsCompletedOnboarding: options.captureUIDirectory != nil
+        )
         ScriptingBridge.shared.host = host
 
         super.init()
@@ -147,6 +150,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tray.onAddWidgets = { [weak self] in self?.library.addWidgets() }
         tray.onQuit = { NSApp.terminate(nil) }
         preferences.onOpenLibrary = { [weak self] in self?.library.show() }
+        // Settings → General → Show Welcome Tour. Replaying the tour must not depend on the
+        // completion flag, which is what keeps it from reappearing on its own.
+        preferences.onShowOnboarding = { [weak self] in self?.onboarding.show(force: true) }
         host.onServerStopped = { [weak self] in
             self?.tray.refreshStatus()
             self?.preferences.refreshIfVisible()
@@ -417,9 +423,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - UI capture (`--capture-ui`)
 
-    /// Shows the library and settings windows, renders both to PNGs, then quits. `cacheDisplay`
-    /// reads the view hierarchy rather than the display, so this needs no Screen Recording
-    /// grant — unlike `screencapture`.
+    /// Shows the library, settings and onboarding windows, renders them to PNGs in light and
+    /// dark appearance and at regular and compact widths, then quits. `cacheDisplay` reads the
+    /// view hierarchy rather than the display, so this needs no Screen Recording grant — unlike
+    /// `screencapture`.
+    ///
+    /// Capturing each window in both appearances and at a tiled width is what makes the design
+    /// review evidence rather than an assertion: the same view code has to read correctly on a
+    /// system surface, in dark mode, and in a half-screen window.
     private func runUICapture() {
         guard let directory = options.captureUIDirectory, !uiCaptureStarted else { return }
         uiCaptureStarted = true
@@ -433,16 +444,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             NSLog("ui capture: library chrome — %@", self.library.chromeSummary)
             NSLog("ui capture: settings chrome — %@", self.preferences.chromeSummary)
-            var captures: [(name: String, image: NSImage?)] = [
-                ("library-window.png", self.library.snapshotWindowImage()),
-                ("preferences-window.png", self.preferences.snapshotWindowImage()),
-                ("onboarding-window.png", self.onboarding.snapshotWindowImage()),
-            ]
-            for tab in PreferencesModel.Tab.allCases where tab != .general {
-                self.preferences.select(tab: tab)
-                RunLoop.current.run(until: Date().addingTimeInterval(0.6))
-                captures.append(("preferences-\(tab.rawValue).png", self.preferences.snapshotWindowImage()))
+
+            var captures: [(name: String, image: NSImage?)] = []
+            // Let SwiftUI lay out and draw after an appearance or size change before reading
+            // the view hierarchy back.
+            func settle(_ seconds: TimeInterval = 0.7) {
+                RunLoop.current.run(until: Date().addingTimeInterval(seconds))
             }
+
+            let regularSize = self.library.window?.contentLayoutRect.size ?? NSSize(width: 1180, height: 760)
+            // Named appearances rather than `nil`: the machine's own setting decides what
+            // `nil` resolves to, so a dark-mode Mac would produce two dark passes and no
+            // light one. `.aqua` and `.darkAqua` pin each pass to what it claims to be.
+            let appearances: [(suffix: String, appearance: NSAppearance?)] = [
+                (suffix: "light", appearance: NSAppearance(named: .aqua)),
+                (suffix: "dark", appearance: NSAppearance(named: .darkAqua)),
+            ]
+            for appearance in appearances {
+                NSApp.appearance = appearance.appearance
+                settle()
+
+                // Regular width: sidebar + gallery + preview.
+                NSLog("ui capture: settings layout (regular) — %@", self.preferences.layoutSummary)
+                captures.append(("library-\(appearance.suffix).png", self.library.snapshotWindowImage()))
+                for tab in PreferencesModel.Tab.allCases {
+                    self.preferences.select(tab: tab)
+                    settle(0.5)
+                    captures.append((
+                        "settings-\(tab.rawValue)-\(appearance.suffix).png",
+                        self.preferences.snapshotWindowImage()
+                    ))
+                }
+                captures.append(("onboarding-\(appearance.suffix).png", self.onboarding.snapshotWindowImage()))
+
+                // A half-screen tile: the same views have to stay usable at the window minimums.
+                // The layout needs a couple of passes to settle at the new size — the hosted
+                // preview web view keeps its old frame for a beat otherwise, and capture reads
+                // the frames it finds.
+                self.library.window?.setContentSize(AppMetrics.libraryMinimum)
+                self.preferences.resizeForCapture(
+                    width: AppMetrics.settingsMinimum.width,
+                    height: AppMetrics.settingsMinimum.height
+                )
+                settle(2)
+                NSLog("ui capture: compact library layout — %@", self.library.previewFrameSummary)
+                let selected = self.library.model.selectedPreset
+                self.library.model.selectedPreset = nil
+                settle(0.8)
+                captures.append(("library-compact-\(appearance.suffix).png", self.library.snapshotWindowImage()))
+                if let selected {
+                    self.library.model.select(selected)
+                    settle(1.5)
+                    NSLog("ui capture: compact preview layout — %@", self.library.previewFrameSummary)
+                    captures.append(("library-compact-preview-\(appearance.suffix).png", self.library.snapshotWindowImage()))
+                }
+                self.preferences.select(tab: .widgets)
+                settle(0.5)
+                captures.append(("settings-compact-\(appearance.suffix).png", self.preferences.snapshotWindowImage()))
+                NSLog("ui capture: settings layout — %@", self.preferences.layoutSummary)
+
+                self.library.window?.setContentSize(regularSize)
+                self.preferences.resizeForCapture(width: 860, height: 640)
+                settle(0.5)
+            }
+
+            NSApp.appearance = nil
             var written = 0
             for capture in captures {
                 guard let image = capture.image else {

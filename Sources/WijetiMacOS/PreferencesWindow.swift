@@ -9,8 +9,6 @@ public final class PreferencesModel: ObservableObject {
     public struct WidgetRow: Identifiable {
         public let id: String
         public var hidden: Bool
-        public var inBackground: Bool
-        public var showOnAllScreens: Bool
     }
 
     @Published public var rows: [WidgetRow] = []
@@ -30,9 +28,63 @@ public final class PreferencesModel: ObservableObject {
             case .advanced: return "Advanced"
             }
         }
+        public var symbol: String {
+            switch self {
+            case .general: return "gearshape"
+            case .widgets: return "square.grid.2x2"
+            case .permissions: return "hand.raised"
+            case .advanced: return "slider.horizontal.3"
+            }
+        }
+        /// One line explaining what the pane is for. Also what the sidebar's search matches,
+        /// so searching "login" or "engine" finds the pane without knowing its name.
+        public var summary: String {
+            switch self {
+            case .general: return "Choose how Wijeti starts and keep widgets up to date."
+            case .widgets: return "See what is installed, then manage it in the Widget Library."
+            case .permissions: return "Manage access granted to widgets on this Mac."
+            case .advanced: return "Configure the widget engine and developer options."
+            }
+        }
+        /// Extra words a query can match, beyond the title and summary.
+        var searchTerms: [String] {
+            switch self {
+            case .general: return ["updates", "version", "check now", "launch at login", "startup", "welcome tour", "onboarding"]
+            case .widgets: return ["installed", "library", "install", "show", "hide", "remove", "desktop"]
+            case .permissions: return ["privacy", "access", "location", "weather", "data source", "units", "temperature"]
+            case .advanced: return ["server", "engine", "restart", "folder", "directory", "login shell", "developer", "inspect", "web inspector"]
+            }
+        }
+
+        /// Whether the sidebar query matches this pane.
+        func matches(_ query: String) -> Bool {
+            let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !needle.isEmpty else { return true }
+            let haystack = ([title, summary] + searchTerms).joined(separator: " ").lowercased()
+            return haystack.contains(needle)
+        }
     }
 
     @Published public var selectedTab: Tab = .general
+    /// The Settings sidebar's search query. Filters the pane list only — it never touches the
+    /// widget catalog, which is searched from the Library's toolbar.
+    @Published public var searchText = ""
+
+    /// Panes matching the sidebar query, in their declared order.
+    public var filteredTabs: [Tab] {
+        Tab.allCases.filter { $0.matches(searchText) }
+    }
+
+    /// Keeps the selection inside the filtered list, so narrowing the search can never leave
+    /// the detail pane showing a pane the sidebar no longer lists.
+    public func selectFirstVisibleTab() {
+        let visible = filteredTabs
+        guard !visible.isEmpty, !visible.contains(selectedTab) else { return }
+        selectedTab = visible[0]
+    }
+
+    public var installedCount: Int { rows.count }
+    public var visibleCount: Int { rows.filter { !$0.hidden }.count }
     @Published public var developerMode: Bool = DeveloperMode.isEnabled
     @Published public var serverStatus: String = ""
     @Published public var serverHealthy: Bool = false
@@ -48,13 +100,7 @@ public final class PreferencesModel: ObservableObject {
 
     public func reload() {
         rows = host.widgetIDs.map { id in
-            let settings = host.settings(for: id)
-            return WidgetRow(
-                id: id,
-                hidden: settings.hidden,
-                inBackground: settings.inBackground,
-                showOnAllScreens: settings.showOnAllScreens
-            )
+            WidgetRow(id: id, hidden: host.settings(for: id).hidden)
         }
         widgetDirectory = host.widgetDirectoryURL.path
         loginShell = host.loginShell
@@ -75,21 +121,6 @@ public final class PreferencesModel: ObservableObject {
         developerMode = enabled
         UserDefaults.standard.set(enabled, forKey: DeveloperMode.defaultsKey)
         host.coordinator.setInspectable(enabled)
-    }
-
-    public func setHidden(_ hidden: Bool, for id: String) {
-        host.updateSettings(id) { $0.hidden = hidden }
-        reload()
-    }
-
-    public func setInBackground(_ value: Bool, for id: String) {
-        host.updateSettings(id) { $0.inBackground = value }
-        reload()
-    }
-
-    public func setShowOnAllScreens(_ value: Bool, for id: String) {
-        host.updateSettings(id) { $0.showOnAllScreens = value }
-        reload()
     }
 
     public func refreshAll() { host.refreshWidgets() }
@@ -133,168 +164,173 @@ struct WidgetSettingsView: View {
     @ObservedObject var probe: PermissionProbe
     @ObservedObject var sources: DataSourceSettings
     var onOpenLibrary: () -> Void
+    var onShowOnboarding: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider()
-            Group {
-                switch model.selectedTab {
-                case .general: generalTab
-                case .widgets: widgetsTab
-                case .permissions:
-                    PermissionsView(probe: probe, sources: sources)
-                case .advanced: advancedTab
+        // `HSplitView`, not `NavigationSplitView`, for a window that has to work at any size:
+        // SwiftUI's navigation-split view takes its *content's* ideal height (a pane's scroll
+        // view reports its whole content height), so a pane taller than the window made the
+        // split view taller than the window too, and the surplus was centred — pushing the pane
+        // heading and the sidebar search field out of sight above the window. A split view fills
+        // whichever box it is given.
+        HSplitView {
+            sidebar
+                .frame(minWidth: 190, idealWidth: 210, maxWidth: 260)
+            paneColumn
+                .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
+                .layoutPriority(1)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: onOpenLibrary) {
+                    Label("Widget Library", systemImage: "square.grid.2x2")
                 }
+                .help("Browse, preview, and install widgets")
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// The selected pane: heading, then the pane's own content, then any status line.
+    private var paneColumn: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            AppPaneHeading(title: model.selectedTab.title, subtitle: model.selectedTab.summary)
+                .padding(.horizontal, AppMetrics.windowGutter)
+                .padding(.top, AppMetrics.paneGutter + 4)
+                .padding(.bottom, AppMetrics.sectionSpacing)
+
             Divider()
-            HStack {
-                Text(model.status.isEmpty ? WidgetsFooterNote.text : model.status)
+
+            // A definite box for the pane: its scroll view must never be able to report its
+            // content height upwards as an ideal size.
+            GeometryReader { proxy in
+                pageContent
+                    .frame(width: max(proxy.size.width, 1), height: max(proxy.size.height, 1))
+            }
+
+            if !model.status.isEmpty {
+                Divider()
+                Label(model.status, systemImage: "info.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer()
-                Button("Widget Library…", action: onOpenLibrary)
-                    .controlSize(.small)
-                Button("Close") { NSApp.keyWindow?.performClose(nil) }
-                    .controlSize(.small)
-                    .keyboardShortcut(.cancelAction)
+                    .lineLimit(2)
+                    .padding(.horizontal, AppMetrics.windowGutter)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
         }
-        .frame(width: 520, height: 620)
+        .background(AppColor.windowSurface)
     }
 
-    // MARK: - Header
+    /// The Settings sidebar: pane search pinned at the top, then the pane list. Search sits
+    /// above the list because it filters the navigation itself; searching *widgets* is the
+    /// Library's job and stays in that window's toolbar.
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            // A definite height: a hosted `NSSearchField` reports no useful height of its own,
+            // and leaving it to be measured made the whole split view's ideal height larger
+            // than the window, which pushed the top of both columns above the visible area.
+            SidebarSearchField(text: $model.searchText, placeholder: "Search settings")
+                .frame(height: 24)
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
+                .padding(.bottom, 6)
+                .accessibilityLabel("Search settings")
 
-    private var header: some View {
-        HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "gear")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(.blue)
-                            .frame(width: 22, height: 22)
-                            .background(
-                                RoundedRectangle(cornerRadius: 4)
-                                    .fill(Color(nsColor: .controlBackgroundColor))
-                            )
-                        Text("Wijeti")
-                            .font(.title3.bold())
-                    }
-                    Text("Settings")
-                        .font(.caption)
+            List(selection: $model.selectedTab) {
+                if model.filteredTabs.isEmpty {
+                    Text(model.searchText.isEmpty ? "Nothing to show" : "No settings match “\(model.searchText)”")
+                        .font(.callout)
                         .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Picker("", selection: $model.selectedTab) {
-                    ForEach(PreferencesModel.Tab.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 360)
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 16)
-            .padding(.bottom, 10)
-    }
-
-    // MARK: - Widgets tab (inset-grouped sections)
-
-    private var widgetsTab: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                insetGroupedSection(
-                    badge: "square.grid.2x2",
-                    badgeColor: .blue,
-                    title: "Installed widgets",
-                    subtitle: model.rows.isEmpty
-                        ? "Nothing installed yet."
-                        : "\(model.rows.count) installed",
-                    footer: "Open the Widget Library to browse bundled widgets, or drop your own widget folder onto it."
-                ) {
-                    if model.rows.isEmpty {
-                        emptyWidgetsRow
-                    } else {
-                        ForEach(model.rows) { row in
-                            widgetRow(row)
+                        .padding(.vertical, 6)
+                } else {
+                    Section("Wijeti") {
+                        ForEach(model.filteredTabs) { tab in
+                            Label {
+                                HStack {
+                                    Text(tab.title)
+                                    Spacer(minLength: 6)
+                                    if tab == .widgets, model.installedCount > 0 {
+                                        Text("\(model.installedCount)")
+                                            .font(.caption.monospacedDigit())
+                                            .foregroundStyle(.secondary)
+                                            .accessibilityLabel("\(model.installedCount) installed")
+                                    }
+                                }
+                            } icon: {
+                                Image(systemName: tab.symbol)
+                            }
+                            .tag(tab)
                         }
                     }
                 }
-                .padding(.bottom, 8)
-
-                insetGroupedSection(
-                    badge: "plus.square.on.square",
-                    badgeColor: .green,
-                    title: "Add widgets",
-                    subtitle: "Browse bundled widgets or install your own.",
-                    footer: nil
-                ) {
-                    Button("Open Widget Library…", action: onOpenLibrary)
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .keyboardShortcut("i", modifiers: .command)
-                }
-                .padding(.bottom, 8)
             }
-            .padding(.horizontal, 20)
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
         }
+        .background(VisualEffectView(material: .sidebar, blendingMode: .withinWindow))
+        .onChange(of: model.searchText) { _, _ in model.selectFirstVisibleTab() }
     }
 
-    private var emptyWidgetsRow: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "square.dashed.on.square")
-                .font(.system(size: 30))
-                .foregroundStyle(.secondary)
-            Text("Open the Widget Library to browse bundled widgets,")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Text("or drop your own widget folder onto it.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+    private var pageContent: some View {
+        Group {
+            switch model.selectedTab {
+            case .general: generalTab
+            case .widgets: widgetsTab
+            case .permissions:
+                PermissionsView(probe: probe, sources: sources)
+            case .advanced: advancedTab
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.top, 10)
     }
 
-    private func widgetRow(_ row: PreferencesModel.WidgetRow) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle("Visible", isOn: Binding(
-                get: { !row.hidden },
-                set: { model.setHidden(!$0, for: row.id) }
-            ))
-            HStack(spacing: 14) {
-                Toggle("Behind other apps", isOn: Binding(
-                    get: { row.inBackground },
-                    set: { model.setInBackground($0, for: row.id) }
-                ))
-                .toggleStyle(.checkbox)
-                Toggle("On every screen", isOn: Binding(
-                    get: { row.showOnAllScreens },
-                    set: { model.setShowOnAllScreens($0, for: row.id) }
-                ))
-                .toggleStyle(.checkbox)
+    // MARK: - Widgets tab
+
+    /// A summary, not a second manager. The Library is the one place widgets are installed,
+    /// shown, hidden and removed; repeating its per-widget switches here made the same toggle
+    /// appear in two windows with no way to tell which one was authoritative.
+    private var widgetsTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: AppMetrics.sectionSpacing) {
+                insetGroupedSection(
+                    badge: "square.grid.2x2",
+                    tone: .accent,
+                    title: "Installed widgets",
+                    subtitle: installedSummary,
+                    footer: "The Widget Library shows every widget, its live preview and its switches — and is where widgets are added, hidden and removed."
+                ) {
+                    HStack(spacing: 10) {
+                        Button("Open Widget Library…", action: onOpenLibrary)
+                            .buttonStyle(.borderedProminent)
+                            .keyboardShortcut("i", modifiers: .command)
+                            .help("Browse, preview, install and manage widgets")
+                        Button("Refresh All") { model.refreshAll() }
+                            .buttonStyle(.bordered)
+                            .disabled(model.rows.isEmpty)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 4)
+                }
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            Text(row.id)
-                .font(.caption2.monospaced())
-                .foregroundStyle(.tertiary)
+            .padding(.horizontal, AppMetrics.windowGutter)
+            .padding(.top, AppMetrics.sectionSpacing)
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var installedSummary: String {
+        guard !model.rows.isEmpty else { return "Nothing installed yet." }
+        let total = model.visibleCount
+        return "\(model.rows.count) installed · \(total) shown on the desktop"
     }
 
     // MARK: - General tab (inset-grouped sections)
 
     private var generalTab: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: AppMetrics.sectionSpacing) {
                 insetGroupedSection(
                     badge: "person.badge.key",
-                    badgeColor: .purple,
+                    tone: .accent,
                     title: "Launch at login",
                     subtitle: "Start Wijeti when you log in.",
                     footer: model.status.isEmpty ? "Wijeti lives in the menu bar and never appears in the Dock." : model.status
@@ -305,14 +341,12 @@ struct WidgetSettingsView: View {
                     ))
                     .padding(.vertical, 4)
                 }
-                .padding(.bottom, 10)
 
                 UpdatesSection()
-                    .padding(.bottom, 10)
 
                 insetGroupedSection(
                     badge: "square.grid.2x2",
-                    badgeColor: .blue,
+                    tone: .accent,
                     title: "Widgets",
                     subtitle: "Browse, install and manage widgets.",
                     footer: "Shortcuts: ⌘L opens the library, ⌘, opens Settings."
@@ -322,12 +356,25 @@ struct WidgetSettingsView: View {
                             .buttonStyle(.borderedProminent)
                         Button("Refresh All") { model.refreshAll() }
                             .buttonStyle(.bordered)
+                        Spacer(minLength: 0)
                     }
                     .padding(.vertical, 4)
                 }
+
+                insetGroupedSection(
+                    badge: "sparkles",
+                    tone: .neutral,
+                    title: "Welcome tour",
+                    subtitle: "See the one-screen introduction again.",
+                    footer: "The tour is optional and never blocks the app: finishing it opens the Widget Library."
+                ) {
+                    Button("Show Welcome Tour") { onShowOnboarding() }
+                        .buttonStyle(.bordered)
+                        .padding(.vertical, 4)
+                }
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
+            .padding(.horizontal, AppMetrics.windowGutter)
+            .padding(.top, AppMetrics.sectionSpacing)
         }
     }
 
@@ -335,10 +382,10 @@ struct WidgetSettingsView: View {
 
     private var advancedTab: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: AppMetrics.sectionSpacing) {
                 insetGroupedSection(
                     badge: "server.rack",
-                    badgeColor: model.serverHealthy ? .green : .red,
+                    tone: model.serverHealthy ? .positive : .negative,
                     title: "Widget engine",
                     subtitle: model.serverStatus,
                     footer: "The bundled Node server that runs your widgets. It restarts itself if it crashes."
@@ -351,11 +398,10 @@ struct WidgetSettingsView: View {
                     }
                     .padding(.vertical, 4)
                 }
-                .padding(.bottom, 10)
 
                 insetGroupedSection(
                     badge: "folder",
-                    badgeColor: .gray,
+                    tone: .neutral,
                     title: "Widgets folder",
                     subtitle: model.widgetDirectory,
                     footer: "Changing the folder restarts the server. Widgets in the old folder are left where they are."
@@ -368,11 +414,10 @@ struct WidgetSettingsView: View {
                     }
                     .padding(.vertical, 4)
                 }
-                .padding(.bottom, 10)
 
                 insetGroupedSection(
                     badge: "keyboard.badge.ellipsis",
-                    badgeColor: .orange,
+                    tone: .neutral,
                     title: "Login shell",
                     subtitle: "Run widget commands through your shell profile.",
                     footer: "Some widgets need your PATH and aliases. Turning this on restarts the server."
@@ -383,11 +428,10 @@ struct WidgetSettingsView: View {
                     ))
                     .padding(.vertical, 4)
                 }
-                .padding(.bottom, 10)
 
                 insetGroupedSection(
                     badge: "hammer",
-                    badgeColor: .teal,
+                    tone: .neutral,
                     title: "Developer mode",
                     subtitle: "Inspect widgets with Safari’s Web Inspector.",
                     footer: "Enable Safari → Settings → Advanced → Show features for web developers, then choose Develop → this Mac."
@@ -399,8 +443,8 @@ struct WidgetSettingsView: View {
                     .padding(.vertical, 4)
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
+            .padding(.horizontal, AppMetrics.windowGutter)
+            .padding(.top, AppMetrics.sectionSpacing)
         }
     }
 }
@@ -414,7 +458,7 @@ private struct UpdatesSection: View {
     var body: some View {
         insetGroupedSection(
             badge: "arrow.down.circle",
-            badgeColor: .green,
+            tone: .positive,
             title: "Updates",
             subtitle: updates.versionDescription,
             footer: updates.isAvailable
@@ -445,13 +489,14 @@ enum WidgetsFooterNote {
     static let text = "Widgets update on their own schedule."
 }
 
-// MARK: - Inset-grouped section view (iOS Settings style, adapted for macOS)
+// MARK: - Inset-grouped section view
 
-/// A section that mimics an iOS `.insetGrouped` list row with a leading icon badge,
-/// a title, a subtitle/foreground-secondary value, and an optional footer.
+/// One grouped section: a leading badge and heading, a divider, the caller's rows, and an
+/// optional footer. Built on the shared design tokens so every Settings pane (and the Library's
+/// own cards) share one surface, radius and border.
 private struct InsetGroupedSection<Content: View>: View {
     let badge: String
-    let badgeColor: Color
+    let tone: AppTone
     let title: String
     let subtitle: String
     let footer: String?
@@ -459,14 +504,14 @@ private struct InsetGroupedSection<Content: View>: View {
 
     init(
         badge: String,
-        badgeColor: Color = .blue,
+        tone: AppTone = .accent,
         title: String,
         subtitle: String,
         footer: String? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.badge = badge
-        self.badgeColor = badgeColor
+        self.tone = tone
         self.title = title
         self.subtitle = subtitle
         self.footer = footer
@@ -475,16 +520,16 @@ private struct InsetGroupedSection<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Section header row: icon badge + title + subtitle (secondary).
             HStack(alignment: .top, spacing: 12) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(badgeColor.opacity(0.16))
+                        .fill(tone.fill)
                     Image(systemName: badge)
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(badgeColor)
+                        .foregroundStyle(tone.color)
                 }
                 .frame(width: 26, height: 26)
+                .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
@@ -493,45 +538,45 @@ private struct InsetGroupedSection<Content: View>: View {
                         Text(subtitle)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 
-                Spacer()
+                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 4)
+            .padding(.horizontal, AppMetrics.cardPadding)
+            .padding(.top, AppMetrics.cardPadding - 2)
+            .padding(.bottom, 6)
 
             Divider()
-                .padding(.horizontal, 16)
+                .padding(.horizontal, AppMetrics.cardPadding)
 
             content
-                .padding(.horizontal, 16)
-                .padding(.top, 2)
+                .padding(.horizontal, AppMetrics.cardPadding)
+                .padding(.top, 4)
 
             if let footer, !footer.isEmpty {
                 Text(footer)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
+                    .padding(.horizontal, AppMetrics.cardPadding)
+                    .padding(.bottom, AppMetrics.cardPadding)
             } else {
                 Color.clear
-                    .padding(.bottom, 12)
+                    .padding(.bottom, AppMetrics.cardPadding)
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
-        .cornerRadius(10)
+        .appCardSurface()
     }
 }
 
-/// Convenience wrapper so callers can write `insetGroupedSection(badge:title:subtitle:footer:content:)`.
+/// Convenience wrapper so callers can write `insetGroupedSection(badge:tone:title:subtitle:footer:content:)`.
 private func insetGroupedSection(
     badge: String,
-    badgeColor: Color = .blue,
+    tone: AppTone = .accent,
     title: String,
     subtitle: String,
     footer: String? = nil,
@@ -539,7 +584,7 @@ private func insetGroupedSection(
 ) -> some View {
     InsetGroupedSection(
         badge: badge,
-        badgeColor: badgeColor,
+        tone: tone,
         title: title,
         subtitle: subtitle,
         footer: footer,
@@ -572,27 +617,28 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate {
                 model: model,
                 probe: probe,
                 sources: sources,
-                onOpenLibrary: { [weak self] in self?.onOpenLibrary?() }
+                onOpenLibrary: { [weak self] in self?.onOpenLibrary?() },
+                onShowOnboarding: { [weak self] in self?.onShowOnboarding?() }
             )
-            let hosting = NSHostingController(rootView: view)
+            // The window's own size governs the layout. With a plain `NSHostingController` the
+            // hosting view adopted SwiftUI's own height instead (787pt whatever the window
+            // size), and a shorter window only pushed the pane heading and the sidebar search
+            // field further out of sight above it.
+            let hosting = FixedSizedHostingController(rootView: view)
+            hosting.sizingOptions = []
             let window = NSWindow(contentViewController: hosting)
-            window.title = "Wijeti Preferences"
-            // Modeless, and deliberately without minimize or zoom: settings are a panel you
-            // glance at and leave open beside your widgets, so `.titled` + `.closable` leaves
-            // exactly one live control in the traffic lights — close. Every change applies
-            // on the spot (see `PreferencesModel`), so there is no Save/Cancel pair either.
-            window.styleMask = [.titled, .closable]
+            window.title = "Settings"
+            // Use standard resizable macOS window chrome. Changes apply immediately, so there
+            // is intentionally no custom Save/Cancel workflow.
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.isReleasedWhenClosed = false
-            // Let the material and the canvas run to the top edge instead of stopping at a
-            // separate chrome bar.
-            window.titlebarAppearsTransparent = true
-            window.titleVisibility = .hidden
-            window.isMovableByWindowBackground = true
-            // A style mask without `.miniaturizable` is not enough on its own: AppKit still
-            // constructs the buttons and can leave them clickable. Hide them outright so the
-            // red close button is genuinely the only live control.
-            window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-            window.standardWindowButton(.zoomButton)?.isHidden = true
+            window.toolbarStyle = .unified
+            window.backgroundColor = .windowBackgroundColor
+            // A minimum that still fits a half-screen tile on a 1280-point display; the panes
+            // themselves adapt below that rather than requiring a wider window.
+            window.minSize = AppMetrics.settingsMinimum
+            window.setContentSize(NSSize(width: 860, height: 640))
+            pinHostingViewToWindowContent(window)
             window.delegate = self
             self.window = window
         }
@@ -601,6 +647,14 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate {
         NSApp.activate()
         window?.makeKeyAndOrderFront(nil)
         NSLog("preferences window shown with %d widget(s)", model.rows.count)
+    }
+
+    /// Re-pins the hosting view after a resize. SwiftUI re-applies the split view's own (content
+    /// derived) height on every resize, which drifts the host view out of the window again.
+    @MainActor
+    public func windowDidResize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        pinHostingViewToWindowContent(window)
     }
 
     /// Renders the settings window to an image — `--capture-ui` uses this to prove the
@@ -623,14 +677,39 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate {
         WindowSnapshot.capture(window)
     }
 
+    /// Dev-only helper for `--capture-ui`: resizes the window while it is on screen so the
+    /// compact layout can be captured. Nothing in normal use calls this.
+    @MainActor
+    public func resizeForCapture(width: CGFloat, height: CGFloat) {
+        window?.setContentSize(NSSize(width: width, height: height))
+    }
+
     /// Chrome check for `--capture-ui` — logged, not eyeballed.
     @MainActor
     public var chromeSummary: String {
         WindowSnapshot.chromeSummary(of: window)
     }
 
+    /// Layout check for `--capture-ui`: the content view's frame, the window's content layout
+    /// rectangle and the hosting view's safe area, so a top-clipped pane can be diagnosed from
+    /// the log instead of guessed at.
+    @MainActor
+    public var layoutSummary: String {
+        guard let window else { return "no window" }
+        let contentView = window.contentView
+        let insets = contentView?.safeAreaInsets ?? .init()
+        let children = (contentView?.subviews ?? []).map {
+            "\(type(of: $0)) \(NSStringFromRect($0.frame))"
+        }.joined(separator: " | ")
+        return "frame=\(NSStringFromRect(window.frame)) content=\(contentView.map { NSStringFromRect($0.frame) } ?? "nil") \(type(of: contentView)) "
+            + "layout=\(NSStringFromRect(window.contentLayoutRect)) safeTop=\(insets.top) children=[\(children)]"
+    }
+
     /// Set by the app delegate so "Add Widgets" can open the library window.
     public var onOpenLibrary: (() -> Void)?
+
+    /// Set by the app delegate so the General pane can replay the first-run tour.
+    public var onShowOnboarding: (() -> Void)?
 
     /// Opens the widget library from the preferences window.
     public func openLibrary() { onOpenLibrary?() }

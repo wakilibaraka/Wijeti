@@ -139,20 +139,19 @@ struct PermissionsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                HStack {
-                    Text("Permissions")
-                        .font(.headline)
-                    Spacer()
+                // No second "Permissions" heading here: the pane heading above already names the
+                // pane, so this row is the explanation plus its one action.
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text("Widgets are scripts, so they can ask for almost any access. Grant only what the "
+                         + "widgets you use need. macOS prompts once per app; some permissions can only be "
+                         + "switched on by hand in System Settings.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
                     Button("Refresh") { probe.refresh() }
                         .controlSize(.small)
                 }
-
-                Text("Widgets are scripts, so they can ask for almost any access. Grant only what the "
-                     + "widgets you use need. macOS prompts once per app; some permissions can only be "
-                     + "switched on by hand in System Settings.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)

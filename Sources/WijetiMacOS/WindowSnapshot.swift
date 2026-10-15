@@ -21,6 +21,16 @@ public enum WindowSnapshot {
         // them is not a picture of the window. Falls back to the content view when there is no
         // frame (a borderless window).
         let view = contentView.superview ?? contentView
+        // Bring the window's content up to date first. SwiftUI's hosted content keeps its last
+        // rendered layer contents until something invalidates them, so a capture taken after a
+        // resize could show pixels laid out for the previous size — a shifted or blank picture
+        // that says nothing about what the window looks like now.
+        if let host = contentView.subviews.first {
+            host.needsLayout = true
+            host.layoutSubtreeIfNeeded()
+            host.needsDisplay = true
+            host.displayIfNeeded()
+        }
         let bounds = view.bounds
         guard bounds.width > 0, bounds.height > 0,
               let rep = view.bitmapImageRepForCachingDisplay(in: bounds)
