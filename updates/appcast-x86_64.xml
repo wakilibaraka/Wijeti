@@ -2,7 +2,46 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <title>Wijeti</title>
-        <item>
+    <item>
+            <title>0.2.0-beta.1</title>
+            <pubDate>Tue, 20 Oct 2026 02:23:09 +0300</pubDate>
+            <sparkle:version>2</sparkle:version>
+            <sparkle:shortVersionString>0.2.0-beta.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[## Wijeti 0.2.0-beta.1
+
+Redesign update. **Ad-hoc signed, not notarized** — read [INSTALL.md](INSTALL.md) for the one-time
+steps to open it safely. Download the build for your Mac: `arm64` for Apple Silicon, `x86_64` for
+Intel. Requires macOS 15 or later.
+
+### Highlights
+- **New onboarding:** one screen — what Wijeti is, where widget management lives, straight into the
+  Widget Library. No separate permissions or launch-at-login step; those live in Settings.
+- **Settings overhaul:** sidebar search across every pane, Widgets pane is now a summary that opens
+  the Library, General gained **Show Welcome Tour**, badges use the shared design tones.
+- **Widget Library redesign:** adaptive grid/list with a shared design system, category sidebar that
+  folds away on narrow windows, live preview pinned to a real frame, inspector-only per-widget
+  controls, and a back control for compact layouts.
+- **Shared design system:** `AppDesign.swift` gives every surface the same gutters, radii, tints,
+  system surfaces, and status tones so Preferences, Library and onboarding read as one app.
+- **Menu bar:** health indicator, Add Widgets, Refresh, Reload, Preferences, Check for Updates;
+  Active Widgets visibility shortcut kept.
+
+### Fixes
+- Desktop widgets come back after the widget server restarts.
+- Safer zip import; a crash-looping server backs off and gives up instead of spinning.
+- Corrupt settings are moved aside instead of being overwritten.
+
+### Known limitations
+- Not notarized (see INSTALL.md); permissions may be re-requested after each update.
+- No default reload interval setting (widgets set their own refresh rate).
+- Intel build is tested under Rosetta only.
+- A per-widget quick action from the desktop itself is the next step — widget management is still
+  reachable only through the windows.
+]]></description>
+            <enclosure url="https://github.com/wakilibaraka/Wijeti/releases/download/v0.2.0-beta.1/Wijeti-0.2.0-beta.1-x86_64.dmg" length="54426585" type="application/octet-stream" sparkle:edSignature="t5Dn1++FpVr5dD1vSFdsaYAK7mXg21AUzzeiH/QPjBhwEQ9AQfLzjsf7Mit1XzqNBx3n2ic8vFScMmrUUi1nDg=="/>
+        </item>
+    <item>
             <title>0.1.0-beta.1</title>
             <pubDate>Mon, 12 Oct 2026 05:58:53 +0300</pubDate>
             <sparkle:version>1</sparkle:version>
@@ -36,5 +75,6 @@ Intel. Requires macOS 15 or later.
 ]]></description>
             <enclosure url="https://github.com/wakilibaraka/Wijeti/releases/download/v0.1.0-beta.1/Wijeti-0.1.0-beta.1-x86_64.dmg" length="55307286" type="application/octet-stream" sparkle:edSignature="inKQ9LNLVY+zGPGAkh2mq97Xm5rmTbIGEdY61jvy3GTe9tRavG7Su1dfVt/YYYr8WlDWQCawyHvZV7CeE4AIDQ=="/>
         </item>
+
     </channel>
 </rss>

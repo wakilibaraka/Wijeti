@@ -29,4 +29,4 @@ jobs:
       - name: Validate plists
         run: |
           plutil -lint Resources/Info.plist Resources/Wijeti.entitlements
-          bash -n Scripts/build-app.sh Scripts/build-runtime.sh Scripts/make-dmg.sh Scripts/make-appcast.sh Scripts/release.sh
+          bash -n Scripts/build-app.sh Scripts/build-runtime.sh Scripts/make-dmg.sh Scripts/make-appcast.sh Scripts/release.sh Scripts/verify-release.sh

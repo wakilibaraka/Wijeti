@@ -2,9 +2,9 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <title>Wijeti</title>
-        <item>
+    <item>
             <title>0.2.0-beta.1</title>
-            <pubDate>Thu, 15 Oct 2026 08:29:32 +0300</pubDate>
+            <pubDate>Tue, 20 Oct 2026 02:23:10 +0300</pubDate>
             <sparkle:version>2</sparkle:version>
             <sparkle:shortVersionString>0.2.0-beta.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
@@ -40,7 +40,8 @@ Intel. Requires macOS 15 or later.
 - A per-widget quick action from the desktop itself is the next step — widget management is still
   reachable only through the windows.
 ]]></description>
-            <enclosure url="https://github.com/wakilibaraka/Wijeti/releases/download/v0.2.0-beta.1/Wijeti-0.2.0-beta.1-arm64.dmg" length="53123250" type="application/octet-stream" sparkle:edSignature="Jug8rI1Dqw6aDB98lqip5r3MaighyOiI9bClexLjSk7tPEBcovj9TeGz4yAx20rz4XY4sJmgUysXncsp0UugBw=="/>
+            <enclosure url="https://github.com/wakilibaraka/Wijeti/releases/download/v0.2.0-beta.1/Wijeti-0.2.0-beta.1-arm64.dmg" length="53123625" type="application/octet-stream" sparkle:edSignature="FTshuVAkyDhPk4X1wqNnItJWvjgFcNGywoPGxEkB1lYkPibf77g6YPdHsvu53iwfxE+XK3J993UVCOZKl3j0Ag=="/>
         </item>
+
     </channel>
 </rss>
