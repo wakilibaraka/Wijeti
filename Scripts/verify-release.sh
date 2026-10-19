@@ -96,15 +96,19 @@ for ARCH_DIR in dist/*/; do
 
     # -- the published release
     if [ "$CHECK_PUBLISHED" -eq 1 ] && command -v gh >/dev/null 2>&1; then
-      if gh release download "$TAG" --pattern "$DMG_NAME" --dir "$DMG_DIR" --clobber >/dev/null 2>&1; then
+      # Each item lives in the release its feed URL points at, not necessarily in the current one.
+      PUBLISHED_TAG="$(printf '%s' "$FEED_URL" | sed -n 's#.*/download/\([^/]*\)/.*#\1#p')"
+      if [ -z "$PUBLISHED_TAG" ]; then
+        fail "could not read the release tag out of '$FEED_URL'"
+      elif gh release download "$PUBLISHED_TAG" --pattern "$DMG_NAME" --dir "$DMG_DIR" --clobber >/dev/null 2>&1; then
         PUBLISHED_SHA="$(shasum -a 256 "$DMG_DIR/$DMG_NAME" | cut -d' ' -f1)"
         if [ "$PUBLISHED_SHA" = "$(shasum -a 256 "$DMG" | cut -d' ' -f1)" ]; then
-          ok "the published $DMG_NAME is byte-identical to the local one"
+          ok "the published $DMG_NAME ($PUBLISHED_TAG) is byte-identical to the local one"
         else
-          fail "the published $DMG_NAME differs from the local one"
+          fail "the published $DMG_NAME ($PUBLISHED_TAG) differs from the local one"
         fi
       else
-        fail "$DMG_NAME is not published in the $TAG release"
+        fail "$DMG_NAME is not published in the $PUBLISHED_TAG release"
       fi
     fi
   done
