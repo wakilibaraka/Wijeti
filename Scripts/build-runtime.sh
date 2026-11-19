@@ -26,9 +26,12 @@ echo "==> building server.js"
 # release/server.js. The old name failed every release build on a clean checkout.
 (cd "$SERVER" && npm run build-server)
 
-cp -R "$SERVER/public" "$RELEASE/public"
+# server/public is a symlink to release/public, so the browser assets are already in place —
+# copying them created a nested release/public/public that nobody asked for. release/package.json
+# is likewise a committed symlink to server/package.json; build-app.sh dereferences it when it
+# assembles the .app, where it really would dangle.
+rm -rf "$RELEASE/node_modules"
 cp -R "$SERVER/node_modules" "$RELEASE/node_modules"
-cp -L "$SERVER/package.json" "$RELEASE/package.json.tmp" && mv -f "$RELEASE/package.json.tmp" "$RELEASE/package.json"
 if [ -f "$SERVER/server.js" ]; then
   cp "$SERVER/server.js" "$RELEASE/server.js"
 fi
