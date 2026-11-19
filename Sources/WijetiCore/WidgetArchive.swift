@@ -104,11 +104,33 @@ public struct WidgetArchive: Sendable {
             throw ArchiveError.unsafeEntry(name)
         }
 
+        // Newer `unzip` builds refuse to create a symlink themselves and exit with a permission
+        // error, so the symlink check after extraction never ran and the user saw a generic
+        // unzip failure instead of "this archive contains a symbolic link". The detailed
+        // listing marks a link with a leading `l` in its permission string, so refuse it here.
+        let details = try run(["-Z", "-l", zipURL.path])
+        if details.status == 0, let link = Self.symlinkEntry(fromDetailedListing: details.output) {
+            throw ArchiveError.containsSymlink(link)
+        }
+
         // `-t` reports the uncompressed total in the last line of `unzip -l`.
         let sizes = try run(["-l", zipURL.path])
         if sizes.status == 0, let total = Self.totalBytes(fromListing: sizes.output), total > maxUncompressedBytes {
             throw ArchiveError.tooLarge(total)
         }
+    }
+
+    /// First symlink named in Info-ZIP's detailed listing, if any.
+    ///
+    /// Each entry line starts with a ten-character permission string (`-rw-r--r--`), and a
+    /// leading `l` is a symbolic link; the entry name is the last field on the line.
+    static func symlinkEntry(fromDetailedListing output: String) -> String? {
+        for line in output.split(whereSeparator: \.isNewline) where line.first == "l" && line.count > 10 {
+            if let name = line.split(separator: " ", omittingEmptySubsequences: true).last {
+                return String(name)
+            }
+        }
+        return nil
     }
 
     static func totalBytes(fromListing output: String) -> Int64? {
