@@ -7,7 +7,11 @@ Widget Library and desktop layout fixes.
 - A broken library is recoverable: the error state names the problem, shows the path it looked
   in, and offers **Choose Folder…**, **Restore Bundled Widgets**, **Copy Diagnostics** and
   **Reveal**. A chosen folder is remembered, and is ignored again if it stops containing a
-  catalog. The same notice appears above the gallery when imported widgets still list.
+  catalog. The same notice appears above the gallery when imported widgets still list. In a
+  packaged app the bundled library lives inside the signed bundle, so Restore copies it into
+  `~/Library/Application Support/Wijeti/Library` and reads the library from there.
+- `--restore-presets` runs that recovery headlessly and logs the result, so a packaged build can
+  prove the path works without a mouse.
 - Widget names no longer truncate: cards, list rows and the inspector wrap to two lines with the
   full name in the tooltip, and status badges moved to the card footer so names get the row.
 - Finding widgets: a count beside every category in the sidebar, and an **All / On Desktop /

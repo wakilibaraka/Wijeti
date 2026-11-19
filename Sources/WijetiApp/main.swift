@@ -21,6 +21,9 @@ struct Options {
     var previewPresetID: String?
     /// `--capture-ui <dir>`: render the library and settings windows to PNGs, then exit.
     var captureUIDirectory: URL?
+    /// `--restore-presets`: run the library's Restore Bundled Widgets action, log what it did
+    /// and exit. Lets a packaged build prove its recovery path without a mouse.
+    var restorePresets = false
 
     init(arguments: [String]) {
         var index = 0
@@ -65,6 +68,8 @@ struct Options {
             case "--capture-ui" where value != nil:
                 captureUIDirectory = URL(fileURLWithPath: value!)
                 consumedValue = true
+            case "--restore-presets":
+                restorePresets = true
             case "--exit-after-snapshot":
                 exitAfterSnapshot = true
             case "--install-presets":
@@ -191,6 +196,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installSignalHandler()
+
+        // `--restore-presets` is the headless form of the Library's Restore Bundled Widgets
+        // action: it repairs whatever `--presets-dir` points at, reports the outcome and quits.
+        if options.restorePresets {
+            library.model.restoreBundledLibrary()
+            NSLog(
+                "restore-presets: %@ (library=%@, presets=%d, problem=%@)",
+                library.model.status,
+                library.model.libraryDirectoryDisplayPath,
+                library.model.catalog.presets.count,
+                library.model.catalogProblem ?? "none"
+            )
+            NSApp.terminate(nil)
+            return
+        }
 
         // `--install-presets` is the scriptable equivalent of the tray item's
         // "Install Bundled Widgets": copy the bundled presets and quit.

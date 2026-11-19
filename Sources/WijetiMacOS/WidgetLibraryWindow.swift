@@ -430,15 +430,18 @@ public final class WidgetLibraryModel: ObservableObject {
 
     /// Copies the widgets that ship with the app into the library folder.
     ///
-    /// Missing entries only: anything the user edited in place is left alone. The bundled copy
-    /// lives inside the app bundle for a packaged build and in the checkout for `swift run`,
-    /// so both are tried before giving up.
+    /// Missing entries only: anything the user edited in place is left alone. In a packaged app
+    /// the library *is* the presets folder inside the signed `.app`, which can be the source of
+    /// a restore but never its destination: repairing it means moving the library to a writable
+    /// folder and copying the bundled widgets there.
     public func restoreBundledLibrary() {
-        let destination = libraryDirectory
-        guard let source = Self.bundledLibrarySource(excluding: destination) else {
+        guard let source = bundledLibrarySource() else {
             status = "The bundled widgets aren’t available in this build — choose a folder instead."
             return
         }
+        let destination = libraryDirectory.canonicalPathURL == source.canonicalPathURL
+            ? Self.writableLibraryDirectory() ?? libraryDirectory
+            : libraryDirectory
         let fm = FileManager.default
         do {
             try fm.createDirectory(at: destination, withIntermediateDirectories: true)
@@ -458,11 +461,17 @@ public final class WidgetLibraryModel: ObservableObject {
             status = "Could not restore the bundled widgets: \(error.localizedDescription)"
             return
         }
-        loadCatalog()
-        autoSelectIfNeeded()
+        if destination.canonicalPathURL != libraryDirectory.canonicalPathURL {
+            // Remember the new root before reading it, so the catalog, the preview and every
+            // action agree on where the library lives.
+            setLibraryDirectory(destination)
+        } else {
+            loadCatalog()
+            autoSelectIfNeeded()
+        }
         status = restored == 0
             ? "Bundled widgets were already in place — re-read \(catalog.presets.count)."
-            : "Restored \(restored) bundled item\(restored == 1 ? "" : "s")."
+            : "Restored \(restored) bundled item\(restored == 1 ? "" : "s") into \(destination.lastPathComponent)."
     }
 
     /// Everything support would ask for, on the clipboard in one step.
@@ -487,22 +496,27 @@ public final class WidgetLibraryModel: ObservableObject {
         status = "Diagnostics copied to the clipboard."
     }
 
-    /// The folder holding the widgets that ship with the app, when it is a different folder
-    /// from the one being repaired.
-    private static func bundledLibrarySource(excluding destination: URL) -> URL? {
+    /// The folder holding the widgets that ship with the app: the app bundle's presets folder
+    /// for a packaged build, and the checkout's `Resources/presets` when running from source.
+    private func bundledLibrarySource() -> URL? {
         var candidates: [URL] = []
         if let resources = Bundle.main.resourceURL {
             candidates.append(resources.appendingPathComponent("presets", isDirectory: true))
         }
+        candidates.append(presetsDirectory)
         if let dev = ProcessInfo.processInfo.environment["WIJETI_PRESETS_DIR"] {
             candidates.append(URL(fileURLWithPath: dev))
         }
-        return candidates.first { url in
-            url.canonicalPathURL != destination.canonicalPathURL
-                && FileManager.default.fileExists(
-                    atPath: url.appendingPathComponent("Catalog.json").path
-                )
+        return candidates.first {
+            FileManager.default.fileExists(atPath: $0.appendingPathComponent("Catalog.json").path)
         }
+    }
+
+    /// A writable place to keep the library when the bundled one cannot be repaired in place.
+    private static func writableLibraryDirectory() -> URL? {
+        FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Wijeti/Library", isDirectory: true)
     }
 
     // MARK: - Preview selection
@@ -511,8 +525,19 @@ public final class WidgetLibraryModel: ObservableObject {
     public func select(_ preset: Preset) {
         selectedCustomFolder = nil
         selectedPreset = preset
-        previewFailed = false
+        beginPreview()
         previewController.show(preset, from: libraryDirectory)
+    }
+
+    /// Clears the last preview outcome before a new request. The failure flag used to survive a
+    /// switch, so picking a working widget still showed "Unavailable" until its page loaded —
+    /// and forever if it never did.
+    private func beginPreview() {
+        previewFailed = false
+        // `previewReady` is deliberately left alone: once the preview page has loaded, the
+        // controller swaps widgets in place and never reports ready again, so clearing it here
+        // would replace a working preview with a spinner that never ends.
+        previewStatus = previewReady ? "Switching preview…" : "Starting preview…"
     }
 
     /// First run of the window: pick something so the pane is never dead space.
@@ -524,20 +549,22 @@ public final class WidgetLibraryModel: ObservableObject {
     /// Re-issues the current selection after a stop (the window was closed).
     public func resumePreview() {
         guard let preset = selectedPreset else { return }
+        beginPreview()
         previewController.show(preset, from: libraryDirectory)
     }
 
     /// Re-issues the selection after a failed start, without disturbing the rest of the window.
     public func retryPreview() {
         guard let preset = selectedPreset else { return }
-        previewFailed = false
-        previewReady = false
-        previewStatus = "Starting preview…"
+        beginPreview()
         previewController.show(preset, from: libraryDirectory)
     }
 
     public func stopPreview() {
         previewController.stop()
+        previewFailed = false
+        previewReady = false
+        previewStatus = "Preview stopped"
     }
 
     /// The widget id the preview server derives from the selected preset's entry file

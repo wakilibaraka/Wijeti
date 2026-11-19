@@ -7,7 +7,9 @@ packages both architectures, refreshes the Sparkle feeds and publishes the GitHu
 - **A missing widget library is recoverable.** The Library names the problem, shows the path it
   looked in, and offers **Choose Folder…**, **Restore Bundled Widgets**, **Copy Diagnostics** and
   **Reveal**. The chosen folder is remembered, and dropped again if it stops containing a
-  catalog. When imported widgets still list, the same notice appears above the gallery.
+  catalog. When imported widgets still list, the same notice appears above the gallery. The
+  packaged app keeps its library inside the signed bundle, so Restore copies the bundled widgets
+  into `~/Library/Application Support/Wijeti/Library` and reads the library from there.
 - **Names are readable.** Cards, list rows and the inspector wrap widget names to two lines and
   keep the full name in the tooltip; status badges moved to the card footer.
 - **Finding widgets takes less scrolling.** Every category in the sidebar carries a count, and an
