@@ -21,6 +21,7 @@ final class AppKitProcessHandle: ServerProcessHandle {
         Self.forward(stdoutPipe, to: self)
         Self.forward(stderrPipe, to: self)
         process.terminationHandler = { [weak self] finished in
+            ChildProcessRegistry.shared.unregister(finished.processIdentifier)
             DispatchQueue.main.async { self?.onTermination?(finished.terminationStatus) }
         }
     }
@@ -31,14 +32,22 @@ final class AppKitProcessHandle: ServerProcessHandle {
         guard process.isRunning else { return }
         process.terminate()
         let pid = process.processIdentifier
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.killGrace) { [weak self] in
-            guard let self, self.process.isRunning, self.process.processIdentifier == pid else { return }
+        // Escalate off the main queue: quitting is exactly when the main thread can be busy,
+        // and an escalation scheduled there would never run — leaving the server and its
+        // ports behind after the app exits. `self` is held strongly for the grace period so
+        // a supervisor that drops its handle right after `terminate()` still escalates.
+        Self.escalationQueue.asyncAfter(deadline: .now() + Self.killGrace) { [self] in
+            guard process.isRunning else { return }
             NSLog("widget server ignored SIGTERM; sending SIGKILL")
             kill(pid, SIGKILL)
         }
     }
 
     private static let killGrace: TimeInterval = 3
+    private static let escalationQueue = DispatchQueue(
+        label: "app.wijeti.server-terminate",
+        qos: .userInitiated
+    )
 
     /// Pumps a pipe into `onOutput` one complete line at a time and detaches at EOF.
     ///
@@ -82,6 +91,9 @@ public final class AppKitProcessLauncher: ServerProcessLaunching {
         handle.process.standardOutput = handle.stdoutPipe
         handle.process.standardError = handle.stderrPipe
         try handle.process.run()
+        // From here on a quit must be able to kill this child even if the main thread never
+        // runs another block (see `ChildProcessRegistry`).
+        ChildProcessRegistry.shared.register(handle.process.processIdentifier)
         return handle
     }
 }

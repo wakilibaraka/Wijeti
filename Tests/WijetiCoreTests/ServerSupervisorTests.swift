@@ -178,6 +178,12 @@ final class ServerSupervisorResilienceTests: XCTestCase {
         launcher = FakeLauncher()
         delays = []
         scheduled = []
+        ProcessTermination.reset()
+    }
+
+    override func tearDown() {
+        ProcessTermination.reset()
+        super.tearDown()
     }
 
     func testCrashLoopBacksOffExponentially() {
@@ -221,5 +227,76 @@ final class ServerSupervisorResilienceTests: XCTestCase {
         XCTAssertTrue(supervisor.isRunning)
         XCTAssertFalse(supervisor.restartScheduled)
         XCTAssertEqual(launcher.handles.count, 2)
+    }
+
+    /// The reported bug: the quit path killed the child, the supervisor called that a crash and
+    /// launched a replacement, so the app that was told to quit kept respawning its server.
+    func testChildExitAfterTerminationDoesNotRestart() {
+        let supervisor = make()
+        supervisor.start()
+        ProcessTermination.begin()
+
+        launcher.lastHandle?.exit()
+
+        XCTAssertFalse(supervisor.isRunning)
+        XCTAssertFalse(supervisor.restartScheduled, "a quitting app must not schedule a restart")
+        XCTAssertEqual(launcher.handles.count, 1)
+    }
+
+    func testStartIsRefusedOnceTerminating() {
+        let supervisor = make()
+        ProcessTermination.begin()
+
+        XCTAssertFalse(supervisor.start())
+        XCTAssertTrue(launcher.handles.isEmpty, "nothing may be launched while quitting")
+    }
+
+    /// A restart that was already scheduled when the signal arrived must not launch either.
+    func testPendingRestartDoesNotLaunchOnceTerminating() {
+        let supervisor = make()
+        supervisor.start()
+        launcher.lastHandle?.exit()
+        XCTAssertTrue(supervisor.restartScheduled)
+
+        ProcessTermination.begin()
+        fireRestart()
+
+        XCTAssertFalse(supervisor.isRunning)
+        XCTAssertEqual(launcher.handles.count, 1)
+    }
+}
+
+final class ChildProcessRegistryTests: XCTestCase {
+    func testTerminateAllKillsRegisteredChild() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        try process.run()
+
+        let registry = ChildProcessRegistry()
+        registry.register(process.processIdentifier)
+
+        let started = Date()
+        registry.terminateAll(grace: 0.2)
+        process.waitUntilExit()
+
+        XCTAssertFalse(process.isRunning, "the child must not outlive terminateAll")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5, "terminateAll must stay bounded")
+        XCTAssertEqual(registry.registeredPIDs, [])
+    }
+
+    func testUnregisteredChildIsNotSignalled() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        try process.run()
+        defer {
+            process.terminate()
+            process.waitUntilExit()
+        }
+
+        ChildProcessRegistry().terminateAll(grace: 0)
+
+        XCTAssertTrue(process.isRunning)
     }
 }

@@ -104,6 +104,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var presetVerifier: PresetVerifier?
     private var verifyStarted = false
     private var uiCaptureStarted = false
+    /// Kept for the life of the app: the dispatch sources only stay installed while it lives.
+    private var terminationSignals: TerminationSignalHandler?
 
     init(options: Options) {
         self.options = options
@@ -308,10 +310,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Quitting must never depend on what the UI happens to be doing. Answering `terminateNow`
+    /// skips the sheets and modal loops that can otherwise hold a quit open forever.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        ProcessTermination.begin()
+        return .terminateNow
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         snapshotWork?.cancel()
         library.shutdown()
         host.stop()
+        // Both servers were just asked to stop, but their SIGKILL escalation is on a timer and
+        // the app exits before it. Killing the registered children here is what guarantees
+        // nothing survives to hold 41416 or the preview ports 41516+.
+        ChildProcessRegistry.shared.terminateAll()
     }
 
     // MARK: - AppleScript
@@ -605,8 +618,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func installSignalHandler() {
-        signal(SIGINT) { _ in DispatchQueue.main.async { NSApp.terminate(nil) } }
-        signal(SIGTERM) { _ in DispatchQueue.main.async { NSApp.terminate(nil) } }
+        // Off the main thread (see `TerminationSignalHandler`): a quit request that needs the
+        // main thread to run something is a quit request an unresponsive app never honours.
+        let handler = TerminationSignalHandler(requestQuit: { NSApp.terminate(nil) })
+        handler.start()
+        terminationSignals = handler
     }
 }
 

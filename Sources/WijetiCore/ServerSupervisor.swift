@@ -97,6 +97,12 @@ public final class ServerSupervisor {
 
     @discardableResult
     public func start() -> Bool {
+        // A quitting process must not gain a new child: the quit path kills the old one, and
+        // launching here would leave a server running after the app is gone.
+        guard !ProcessTermination.isTerminating else {
+            log("not launching widget server: the app is quitting")
+            return false
+        }
         guard !isRunning, !restartScheduled else { return false }
         shuttingDown = false
         gaveUp = false
@@ -136,7 +142,7 @@ public final class ServerSupervisor {
     /// Restarts the server in place: the exit handler schedules the replacement process,
     /// so the port walk and restart delay behave exactly as they do after a crash.
     public func restart() {
-        guard !shuttingDown else { return }
+        guard !shuttingDown, !ProcessTermination.isTerminating else { return }
         guard isRunning, let handle else {
             _ = start()
             return
@@ -175,7 +181,7 @@ public final class ServerSupervisor {
     private func handleTermination() {
         isRunning = false
         handle = nil
-        guard !shuttingDown else { return }
+        guard !shuttingDown, !ProcessTermination.isTerminating else { return }
 
         onServerStopped?()
 
@@ -200,7 +206,7 @@ public final class ServerSupervisor {
         nextRestartDelay = min(restartDelay * pow(2, Double(exponent)), Self.maxRestartDelay)
         restartScheduled = true
         scheduler(nextRestartDelay) { [weak self] in
-            guard let self, !self.shuttingDown else { return }
+            guard let self, !self.shuttingDown, !ProcessTermination.isTerminating else { return }
             self.restartScheduled = false
             _ = self.start()
         }
