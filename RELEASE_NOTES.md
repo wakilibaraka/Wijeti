@@ -1,7 +1,7 @@
-## Unreleased
+## Wijeti 0.2.1-beta.1
 
-Widget Library and desktop layout fixes. Not a published build yet — cut one with
-`Scripts/release.sh`, which bumps `BUILD_NUMBER`, builds the DMG and refreshes the Sparkle feeds.
+Widget Library and desktop layout fixes. Build this version with `Scripts/release.sh`, which
+packages both architectures, refreshes the Sparkle feeds and publishes the GitHub release.
 
 ### Fixes
 - **A missing widget library is recoverable.** The Library names the problem, shows the path it

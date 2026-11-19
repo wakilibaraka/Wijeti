@@ -22,7 +22,9 @@ echo "==> npm ci (widget engine dependencies)"
 mkdir -p "$RELEASE"
 
 echo "==> building server.js"
-(cd "$SERVER" && npm run build)
+# package.json has no "build" script; "build-server" is the one that bundles server.coffee into
+# release/server.js. The old name failed every release build on a clean checkout.
+(cd "$SERVER" && npm run build-server)
 
 cp -R "$SERVER/public" "$RELEASE/public"
 cp -R "$SERVER/node_modules" "$RELEASE/node_modules"

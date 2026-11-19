@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1-beta.1
 
 Widget Library and desktop layout fixes.
 

@@ -17,7 +17,7 @@ A native Swift desktop widget host for macOS: the spirit of
 [Übersicht](https://github.com/felixhageloh/uebersicht) rewritten in Swift, with a menu bar app, a
 widget library with live preview, and permissions that cover what widgets actually need.
 
-> **Beta.** Wijeti `0.2.0-beta.1` is ad-hoc signed and not notarized. Follow
+> **Beta.** Wijeti `0.2.1-beta.1` is ad-hoc signed and not notarized. Follow
 > **[INSTALL.md](INSTALL.md)** for the safe one-time steps to open it.
 
 <p align="center">
