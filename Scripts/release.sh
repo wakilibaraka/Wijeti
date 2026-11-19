@@ -8,7 +8,8 @@
 # Requirements:
 #   - Xcode with the Swift toolchain, and `gh` authenticated with write access
 #   - the Sparkle EdDSA private key in the login keychain (Scripts/make-appcast.sh signs with it)
-#   - RELEASE_NOTES.md written for the version in VERSION (it becomes the release body)
+#   - RELEASE_NOTES.md written for the version in VERSION (its section becomes the release body;
+#     the older sections kept above it are not published)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -60,6 +61,25 @@ done
 [ -f "$NOTES" ] || fail "$NOTES is missing — write the release notes for $VERSION first"
 [ "$(head -1 "$NOTES")" = "## Wijeti $VERSION" ] \
   || fail "$NOTES starts with '$(head -1 "$NOTES")' but this release is $VERSION"
+
+# RELEASE_NOTES.md keeps every release so the history stays readable, but the release body must
+# be this version's section only: handing the whole file to `gh release create` published the
+# 0.2.0 and 0.1.0 sections inside the 0.2.1 release too. Cut from the version heading to the
+# next `## ` heading (exact match, so 0.2.1-beta.1 cannot pick up a 0.2.1-beta.10 section).
+NOTES_SECTION="$(mktemp "${TMPDIR:-/tmp}/wijeti-release-notes.XXXXXX")"
+trap 'rm -f "$NOTES_SECTION"' EXIT
+awk -v heading="## Wijeti $VERSION" '
+  $0 == heading { inside = 1; next }
+  inside && /^## / { exit }
+  inside {
+    if (!started && $0 ~ /^[[:space:]]*$/) next
+    started = 1
+    print
+  }
+' "$NOTES" > "$NOTES_SECTION"
+[ -s "$NOTES_SECTION" ] \
+  || fail "no notes found under '## Wijeti $VERSION' in $NOTES"
+echo "==> release body: $(wc -l < "$NOTES_SECTION" | tr -d ' ') line(s) from '## Wijeti $VERSION'"
 if [ "$DRY_RUN" -eq 0 ]; then
   gh auth status >/dev/null 2>&1 || fail "gh is not authenticated (run 'gh auth login')"
 fi
@@ -112,9 +132,9 @@ if [ "$DRY_RUN" -eq 0 ]; then
   if gh release view "$TAG" >/dev/null 2>&1; then
     echo "==> release $TAG exists — refreshing its assets and notes"
     gh release upload "$TAG" "${ASSETS[@]}" --clobber
-    gh release edit "$TAG" --title "Wijeti $VERSION" --notes-file "$NOTES" --prerelease
+    gh release edit "$TAG" --title "Wijeti $VERSION" --notes-file "$NOTES_SECTION" --prerelease
   else
-    gh release create "$TAG" --title "Wijeti $VERSION" --notes-file "$NOTES" --prerelease "${ASSETS[@]}"
+    gh release create "$TAG" --title "Wijeti $VERSION" --notes-file "$NOTES_SECTION" --prerelease "${ASSETS[@]}"
   fi
 fi
 
