@@ -17,7 +17,7 @@ A native Swift desktop widget host for macOS: the spirit of
 [Übersicht](https://github.com/felixhageloh/uebersicht) rewritten in Swift, with a menu bar app, a
 widget library with live preview, and permissions that cover what widgets actually need.
 
-> **Beta.** Wijeti `0.1.0-beta.1` is ad-hoc signed and not notarized. Follow
+> **Beta.** Wijeti `0.2.0-beta.1` is ad-hoc signed and not notarized. Follow
 > **[INSTALL.md](INSTALL.md)** for the safe one-time steps to open it.
 
 <p align="center">
@@ -38,8 +38,14 @@ Requires macOS 15 or later. Updates arrive automatically (Settings → General �
 
 ## Features
 
-- **Widget Library (⌘L).** Grid or list, foldable category sidebar, search, live preview, and
-  multi-select with bulk show / hide, placement, category and remove.
+- **Widget Library (⌘L).** Grid or list, foldable category sidebar with a count per category,
+  search across names and descriptions, an **All / On Desktop / Free to Add** filter, a live
+  preview with a state badge, and multi-select with bulk show / hide, placement, category and
+  remove.
+- **Recovers from a missing library.** When the folder that ships the bundled widgets cannot be
+  read, the Library says what is wrong, shows the path it looked in, and offers **Choose
+  Folder…**, **Restore Bundled Widgets** and **Copy Diagnostics** — plus a **Try Again** action
+  when a preview fails instead of a spinner that never ends.
 - **Add your own (⌘N).** `.zip`, folders, `.jsx` / `.js` / `.coffee` or plain `.html` pages; then
   name and categorize them. Right-click anything for its menu.
 - **Permissions.** About 25 permissions (Automation per app, Calendars, Camera, Bluetooth, Full

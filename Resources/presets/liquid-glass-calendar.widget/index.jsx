@@ -254,8 +254,16 @@ const readStoredValue = (key, fallback) => {
 
 const MIN_SIZE = { width: 320, height: 170 };
 
+// The first-run slot: the right rail, below the clock band and below the system card that
+// sits in the top-right corner. { x: 60, y: 60 } used to put the calendar on top of the clock
+// and the welcome card on a fresh install; 170 still clipped the system card.
+const defaultPosition = () => {
+  if (typeof window === "undefined") return { x: 60, y: 200 };
+  return { x: Math.max(24, window.innerWidth - 464), y: 200 };
+};
+
 const InteractiveWidget = ({ error }) => {
-  const [pos, setPos] = React.useState(() => readStoredValue("liquid_cal_pos", { x: 60, y: 60 }));
+  const [pos, setPos] = React.useState(() => readStoredValue("liquid_cal_pos", defaultPosition()));
   const [size, setSize] = React.useState(() => {
     const saved = readStoredValue("liquid_cal_size", { width: 440, height: 180 });
     return {

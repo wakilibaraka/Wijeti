@@ -1,3 +1,29 @@
+## Unreleased
+
+Widget Library and desktop layout fixes. Not a published build yet — cut one with
+`Scripts/release.sh`, which bumps `BUILD_NUMBER`, builds the DMG and refreshes the Sparkle feeds.
+
+### Fixes
+- **A missing widget library is recoverable.** The Library names the problem, shows the path it
+  looked in, and offers **Choose Folder…**, **Restore Bundled Widgets**, **Copy Diagnostics** and
+  **Reveal**. The chosen folder is remembered, and dropped again if it stops containing a
+  catalog. When imported widgets still list, the same notice appears above the gallery.
+- **Names are readable.** Cards, list rows and the inspector wrap widget names to two lines and
+  keep the full name in the tooltip; status badges moved to the card footer.
+- **Finding widgets takes less scrolling.** Every category in the sidebar carries a count, and an
+  **All / On Desktop / Free to Add** filter sits beside the result count.
+- **The preview pane tells you what it is doing.** A **Live preview** / **Loading** /
+  **Unavailable** badge, and a failed preview explains itself with **Try Again**.
+- **Destructive actions are named.** "Remove <widget> from Desktop…" replaces a bare Remove, and
+  a confirmation still comes first.
+- **Desktop widgets no longer collide on a fresh install.** The welcome card sits below the
+  clock, the quote moved to the left rail, and the 8-ball and calendar sit clear of the system
+  card, the day progress rows and each other.
+
+### Known limitations
+- Same as 0.2.0-beta.1: ad-hoc signed, not notarized; permissions may be re-requested after an
+  update; widget management is still window-only.
+
 ## Wijeti 0.2.0-beta.1
 
 Redesign update. **Ad-hoc signed, not notarized** — read [INSTALL.md](INSTALL.md) for the one-time

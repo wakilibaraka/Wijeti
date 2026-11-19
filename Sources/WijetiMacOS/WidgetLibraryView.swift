@@ -264,9 +264,22 @@ struct WidgetLibraryView: View {
                 .tag(Source.installed)
             }
             Section("Browse by category") {
+                // Counts on every category: twelve rows with no indication of how many sit
+                // behind each name meant opening a category to find out it was empty.
                 ForEach(model.categories, id: \.self) { category in
-                    Label(category, systemImage: Self.symbol(forCategory: category))
-                        .tag(Source.category(category))
+                    Label {
+                        HStack(spacing: 6) {
+                            Text(category)
+                            Spacer(minLength: 6)
+                            Text("\(model.countForCategory(category))")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: Self.symbol(forCategory: category))
+                    }
+                    .tag(Source.category(category))
+                    .help("\(model.countForCategory(category)) widgets in \(category)")
                 }
             }
         }
@@ -308,6 +321,8 @@ struct WidgetLibraryView: View {
     private var items: [LibraryItem] {
         if model.showRecentFirst {
             let needle = model.search.lowercased()
+            // This list is installed by definition, so the "free to add" filter empties it.
+            guard model.installFilter != .available else { return [] }
             return model.installed
                 .filter { needle.isEmpty || $0.title.lowercased().contains(needle) }
                 .map { widget in
@@ -344,6 +359,12 @@ struct WidgetLibraryView: View {
         return VStack(alignment: .leading, spacing: 0) {
             header(items)
             Divider()
+            // A missing library used to look like a normal window whenever the desktop still
+            // had imported widgets to list: the problem was only drawn on an empty gallery.
+            // With nothing to list, the empty state below carries the same message in full.
+            if model.catalogProblem != nil, !items.isEmpty {
+                libraryProblemBanner
+            }
             if items.isEmpty {
                 ScrollView { emptyState }
             } else if viewMode == "list" {
@@ -358,6 +379,39 @@ struct WidgetLibraryView: View {
     private var title: String {
         if model.showRecentFirst { return "Installed" }
         return model.selectedCategory ?? "All Widgets"
+    }
+
+    /// A one-line report of an unreadable library, with the same three ways out as the empty
+    /// state, so the problem is visible whether or not the gallery has anything to list.
+    private var libraryProblemBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(AppTone.warning.color)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("The widget library folder is missing")
+                    .font(.callout.weight(.medium))
+                Text(model.libraryDirectoryDisplayPath)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            Button("Choose Folder…") { model.chooseLibraryDirectory() }
+                .help("Point Wijeti at the folder that holds Catalog.json")
+            Button("Restore") { model.restoreBundledLibrary() }
+                .help("Copy the widgets that ship with Wijeti into this folder")
+            Button("Copy Diagnostics") { model.copyLibraryDiagnostics() }
+                .help("Copy the paths and versions support needs")
+        }
+        .controlSize(.small)
+        .padding(.horizontal, Self.gutter)
+        .padding(.vertical, 8)
+        .background(AppTone.warning.fill)
+        .overlay(alignment: .bottom) { Divider() }
+        .accessibilityElement(children: .contain)
     }
 
     private func header(_ items: [LibraryItem]) -> some View {
@@ -375,18 +429,35 @@ struct WidgetLibraryView: View {
                     .accessibilityLabel("\(items.count) widgets")
             }
             HStack(spacing: 8) {
-                if model.showRecentFirst {
-                    Label("Your widgets", systemImage: "checkmark.circle")
-                } else if let category = model.selectedCategory {
-                    Label(category, systemImage: Self.symbol(forCategory: category))
-                } else {
-                    Label("Explore the library", systemImage: "sparkles")
+                HStack(spacing: 8) {
+                    if model.showRecentFirst {
+                        Label("Your widgets", systemImage: "checkmark.circle")
+                    } else if let category = model.selectedCategory {
+                        Label(category, systemImage: Self.symbol(forCategory: category))
+                    } else {
+                        Label("Explore the library", systemImage: "sparkles")
+                    }
+                    Text("·")
+                    Text(model.search.isEmpty ? "Select a widget to preview it" : "Results update as you type")
                 }
-                Text("·")
-                Text(model.search.isEmpty ? "Select a widget to preview it" : "Results update as you type")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                Spacer(minLength: 8)
+
+                // Search found widgets; this narrows them by whether they are already on the
+                // desktop, which the sidebar's categories cannot express.
+                Picker("Show widgets", selection: $model.installFilter) {
+                    ForEach(WidgetLibraryModel.LibraryFilter.allCases) { filter in
+                        Text(filter.rawValue).tag(filter)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(width: 250)
+                .help("Show all widgets, only those on the desktop, or only those free to add")
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
         .padding(.horizontal, Self.gutter)
         .padding(.top, 18)
@@ -525,19 +596,22 @@ struct WidgetLibraryView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.title)
                                 .font(.headline)
-                                .lineLimit(1)
+                                // Was a single line, so "Day & Week Progress" read "Day & We…"
+                                // at the default card width.
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .help(item.title)
                             Text(item.category)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
                         Spacer(minLength: 4)
-                        if item.widget != nil { statusView(item) }
                     }
                     Text(item.subtitle)
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(3)
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
                     HStack {
@@ -569,7 +643,9 @@ struct WidgetLibraryView: View {
                     .tracking(0.6)
                     .foregroundStyle(.tertiary)
                 Spacer(minLength: 8)
-                if item.widget == nil { statusView(item) }
+                // Every status lives in the footer, so a widget's name has the card's full
+                // width instead of whatever the badge on its right left over.
+                statusView(item)
             }
         }
         .padding(14)
@@ -608,7 +684,11 @@ struct WidgetLibraryView: View {
             leadingIcon(item)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(item.title).fontWeight(.medium).lineLimit(1)
+                    Text(item.title)
+                        .fontWeight(.medium)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .help(item.title)
                     tag(item.category)
                 }
                 Text(item.subtitle)
@@ -655,7 +735,9 @@ struct WidgetLibraryView: View {
         }
         Button("Reveal in Finder") { model.revealOnDisk(widget) }
         Divider()
-        Button("Remove…", role: .destructive) { model.confirmRemove(widget) }
+        // Named in full: the old menu item was a bare "Remove…" in a list of switches, and a
+        // red bin beside the status badge said even less.
+        Button("Remove \(widget.title) from Desktop…", role: .destructive) { model.confirmRemove(widget) }
     }
 
     // MARK: Empty state
@@ -675,13 +757,44 @@ struct WidgetLibraryView: View {
                 Text("No widgets match “\(model.search)”").font(.headline)
                 Button("Clear Search") { model.search = "" }
             } else if let problem = model.catalogProblem {
-                Text("The widget library didn’t load").font(.headline)
-                Text(problem).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                Text(model.libraryDirectoryDisplayPath)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.tertiary)
-                    .textSelection(.enabled)
-                Button("Reveal Library Folder") { model.revealLibraryDirectory() }
+                // Was a dead end: a raw path and "Reveal Library Folder", which reveals a folder
+                // that is not there. Now: what is wrong, where it looked, and three ways out.
+                VStack(spacing: 10) {
+                    Text("Wijeti can’t find the widget library").font(.headline)
+                    Text(problem)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(model.libraryDirectoryDisplayPath)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(AppColor.chipFill, in: RoundedRectangle(cornerRadius: 6))
+                    HStack(spacing: 8) {
+                        Button("Choose Folder…") { model.chooseLibraryDirectory() }
+                            .buttonStyle(.borderedProminent)
+                            .help("Point Wijeti at the folder that holds Catalog.json")
+                        Button("Restore Bundled Widgets") { model.restoreBundledLibrary() }
+                            .buttonStyle(.bordered)
+                            .help("Copy the widgets that ship with Wijeti into this folder")
+                        Button("Copy Diagnostics") { model.copyLibraryDiagnostics() }
+                            .buttonStyle(.bordered)
+                            .help("Copy the paths and versions support needs")
+                        Button("Reveal") { model.revealLibraryDirectory() }
+                            .buttonStyle(.link)
+                    }
+                    .controlSize(.small)
+                    Text("Restoring only adds what is missing. Widgets already on your desktop keep running.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 24)
+                .frame(maxWidth: 640)
             } else {
                 Text("Nothing here yet").font(.headline)
                 Text("Drop a folder or .zip here, or press Add Widget.")
@@ -707,9 +820,12 @@ struct WidgetLibraryView: View {
                     if isCompact {
                         backToGalleryButton
                     }
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(preset.title).font(.title3.weight(.semibold))
-                        Spacer()
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(preset.title)
+                            .font(.title3.weight(.semibold))
+                            .lineLimit(2)
+                        Spacer(minLength: 8)
+                        previewBadge
                         // In the compact layout the back button above already returns to the
                         // gallery, so a second control that does the same thing is left out.
                         if !isCompact {
@@ -758,7 +874,9 @@ struct WidgetLibraryView: View {
                 backToGalleryButton
             }
             HStack(alignment: .firstTextBaseline) {
-                Text(widget.title).font(.title3.weight(.semibold))
+                Text(widget.title)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(2)
                 Spacer()
                 if !isCompact {
                     Button { model.selectedCustomFolder = nil } label: {
@@ -807,8 +925,9 @@ struct WidgetLibraryView: View {
                 Button("Rename or Change Category…") { model.beginCustomize(widget) }
                 Button("Reveal") { model.revealOnDisk(widget) }
                 Spacer()
-                Button("Remove", role: .destructive) { model.confirmRemove(widget) }
+                Button("Remove from Desktop…", role: .destructive) { model.confirmRemove(widget) }
                     .foregroundStyle(.red)
+                    .help("Takes \(widget.title) off the desktop and asks before deleting it")
             }
             .controlSize(.small)
         }
@@ -907,6 +1026,23 @@ struct WidgetLibraryView: View {
             AppColor.recessedSurface
             if model.previewReady {
                 PreviewWebView(controller: model.previewController.webViewController)
+            } else if model.previewFailed {
+                // A preview that cannot start explains itself and offers a way back, instead
+                // of leaving the pane on "Preparing preview…" indefinitely.
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 22, weight: .light))
+                        .foregroundStyle(AppTone.warning.color)
+                        .accessibilityHidden(true)
+                    Text(model.previewStatus.isEmpty ? "The preview didn’t start." : model.previewStatus)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(4)
+                    Button("Try Again") { model.retryPreview() }
+                        .controlSize(.small)
+                }
+                .padding(20)
             } else {
                 VStack(spacing: 10) {
                     ProgressView().controlSize(.small)
@@ -922,6 +1058,19 @@ struct WidgetLibraryView: View {
         .frame(minHeight: 280, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: Self.radius))
         .overlay(RoundedRectangle(cornerRadius: Self.radius).strokeBorder(AppColor.border))
+    }
+
+    /// Says whether what is in the pane is a live render, still starting, or broken — the pane
+    /// used to look identical while loading and after a failure.
+    @ViewBuilder
+    private var previewBadge: some View {
+        if model.previewReady {
+            AppStatusBadge(text: "Live preview", tone: .positive, symbol: "dot.radiowaves.left.and.right")
+        } else if model.previewFailed {
+            AppStatusBadge(text: "Unavailable", tone: .negative, symbol: "exclamationmark.triangle.fill")
+        } else {
+            AppStatusBadge(text: "Loading", tone: .neutral, symbol: "clock")
+        }
     }
 
     @ViewBuilder
@@ -955,8 +1104,9 @@ struct WidgetLibraryView: View {
                 Button("Edit Source") { model.openSource(for: preset) }
                 Spacer()
                 if model.isInstalled(preset) {
-                    Button("Remove", role: .destructive) { model.confirmRemoveInstalled(preset) }
+                    Button("Remove from Desktop…", role: .destructive) { model.confirmRemoveInstalled(preset) }
                         .foregroundStyle(.red)
+                        .help("Takes \(preset.title) off the desktop and asks before deleting it")
                 }
             }
             .controlSize(.small)

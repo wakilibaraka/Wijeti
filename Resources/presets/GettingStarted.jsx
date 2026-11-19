@@ -10,7 +10,9 @@ export const refreshFrequency = 1000000;
 // the CSS style for this widget, written using Emotion
 // https://emotion.sh/
 export const className = `
-  top: 10%;
+  /* Below the clock's band. At 10% this card sat on top of the Digital Clock, which painted
+     through it and clipped the welcome text. */
+  top: 24%;
   right: 0;
   left: 0;
   width: 340px;
@@ -53,8 +55,7 @@ export const render = ({ output }) => (
       <em>Preferences</em>.
     </p>
     <p>
-      To add your own, drop a widget folder anywhere on this window — or edit
-      this file: choose <em>Open Widgets Folder</em> from the tray menu.
+      To add your own, drop a widget folder anywhere on this window.
     </p>
   </div>
 );

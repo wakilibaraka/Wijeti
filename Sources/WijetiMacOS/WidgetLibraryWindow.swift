@@ -232,6 +232,15 @@ public final class WidgetLibraryModel: ObservableObject {
         public var isCustom = false
     }
 
+    /// What the gallery is restricted to: everything, what is already on the desktop, or what
+    /// is free to add.
+    public enum LibraryFilter: String, CaseIterable, Identifiable {
+        case all = "All"
+        case onDesktop = "On Desktop"
+        case available = "Free to Add"
+        public var id: String { rawValue }
+    }
+
     /// What the rename / classify sheet is editing.
     public struct CustomizeTarget: Identifiable, Equatable {
         public var id: String { folder }
@@ -259,6 +268,9 @@ public final class WidgetLibraryModel: ObservableObject {
     @Published public var catalogProblem: String?
     @Published public var search = ""
     @Published public var selectedCategory: String?
+    /// Which widgets the gallery lists. Category navigation answers "what is this", this
+    /// answers "what am I not using yet" — both were missing from one control or the other.
+    @Published public var installFilter: LibraryFilter = .all
     @Published public var status = "" {
         didSet {
             guard status != oldValue, !status.isEmpty else { return }
@@ -282,6 +294,9 @@ public final class WidgetLibraryModel: ObservableObject {
     @Published public var previewStatus = ""
     /// True once the preview page has loaded; until then the pane shows the status.
     @Published public var previewReady = false
+    /// True when the preview could not start, so the pane can offer a retry instead of
+    /// spinning forever on "Preparing preview…".
+    @Published public var previewFailed = false
     /// True while a drag is hovering over the window, for the drop-target affordance.
     @Published public var isDropTargeted = false
     /// Shows a one-shot confirmation/alert popup.
@@ -299,6 +314,11 @@ public final class WidgetLibraryModel: ObservableObject {
     let previewController: WidgetPreviewController
     private let host: HostApp
     private let presetsDirectory: URL
+    /// The folder the catalog is actually read from. Normally the app's own presets folder,
+    /// but a missing or moved library can be pointed at any folder the user picks, and that
+    /// choice survives a relaunch — otherwise every launch would fall back to the broken path.
+    @Published public private(set) var libraryDirectory: URL
+    private static let libraryPathDefaultsKey = "library.directory"
 
     /// Built on demand rather than stored: the widget folder can change while the app runs, so
     /// a cached importer would keep writing into the folder the user just moved away from.
@@ -309,6 +329,7 @@ public final class WidgetLibraryModel: ObservableObject {
     public init(host: HostApp, presetsDirectory: URL) {
         self.host = host
         self.presetsDirectory = presetsDirectory
+        self.libraryDirectory = Self.rememberedLibraryDirectory() ?? presetsDirectory
         previewController = WidgetPreviewController(
             platform: host.platform,
             loginShell: { host.loginShell }
@@ -318,6 +339,14 @@ public final class WidgetLibraryModel: ObservableObject {
         }
         previewController.onReadyChange = { [weak self] ready in
             self?.previewReady = ready
+            if ready { self?.previewFailed = false }
+        }
+        // A preview that cannot start used to leave the pane spinning forever. The failure is
+        // recorded so the pane can say what went wrong and offer a retry instead.
+        previewController.onFailure = { [weak self] message in
+            self?.previewFailed = true
+            self?.previewReady = false
+            self?.previewStatus = message
         }
         // Read the catalog now, not on first show. The SwiftUI content is built as part of
         // this controller's window, so anything loaded only in `showWindow` is missing from
@@ -328,7 +357,7 @@ public final class WidgetLibraryModel: ObservableObject {
 
     /// Reads `Catalog.json` and records why it was empty, if it was.
     func loadCatalog() {
-        let report = PresetCatalog.loadReport(from: presetsDirectory) { NSLog("%@", $0) }
+        let report = PresetCatalog.loadReport(from: libraryDirectory) { NSLog("%@", $0) }
         catalog = PresetCatalog(presets: report.presets)
         catalogProblem = report.presets.isEmpty ? report.problem : nil
     }
@@ -336,17 +365,144 @@ public final class WidgetLibraryModel: ObservableObject {
     /// Where the library was read from, with the home directory abbreviated for display.
     public var libraryDirectoryDisplayPath: String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let path = presetsDirectory.canonicalPathURL.path
+        let path = libraryDirectory.canonicalPathURL.path
         return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
     }
 
     /// Opens the library folder so a broken install can be inspected where it actually is.
     public func revealLibraryDirectory() {
-        let directory = presetsDirectory.canonicalPathURL
+        let directory = libraryDirectory.canonicalPathURL
         let target = FileManager.default.fileExists(atPath: directory.path)
             ? directory
             : directory.deletingLastPathComponent()
         host.platform.revealInFinder(target)
+    }
+
+    // MARK: - Broken or moved library
+
+    /// A library path the user chose earlier, but only while it still has a catalog in it.
+    /// A remembered path that no longer resolves is ignored rather than trusted, so a folder
+    /// deleted since last launch cannot leave the window permanently empty.
+    private static func rememberedLibraryDirectory() -> URL? {
+        guard let path = UserDefaults.standard.string(forKey: libraryPathDefaultsKey),
+              !path.isEmpty else { return nil }
+        let url = URL(fileURLWithPath: path).canonicalPathURL
+        let catalog = url.appendingPathComponent("Catalog.json")
+        return FileManager.default.fileExists(atPath: catalog.path) ? url : nil
+    }
+
+    /// Points the library at a folder the user picked, remembering the choice.
+    public func chooseLibraryDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use Library"
+        panel.message = "Choose the folder that holds Catalog.json and the bundled widgets."
+        panel.directoryURL = libraryDirectory.deletingLastPathComponent()
+        guard panel.runModal() == .OK, let chosen = panel.url else { return }
+        setLibraryDirectory(chosen)
+    }
+
+    /// Switches the catalog root and re-reads it. Kept separate from the panel so the choice
+    /// can also be made without UI (capture runs, tests).
+    public func setLibraryDirectory(_ url: URL) {
+        let canonical = url.canonicalPathURL
+        libraryDirectory = canonical
+        UserDefaults.standard.set(canonical.path, forKey: Self.libraryPathDefaultsKey)
+        catalogProblem = nil
+        selectedPreset = nil
+        loadCatalog()
+        if catalog.presets.isEmpty {
+            status = "No Catalog.json in \(canonical.lastPathComponent)."
+        } else {
+            status = "Library set to \(canonical.lastPathComponent) — \(catalog.presets.count) widgets."
+        }
+        reload()
+        autoSelectIfNeeded()
+    }
+
+    /// Forgets the chosen folder and goes back to the library that ships with the app.
+    public func useBundledLibraryDirectory() {
+        UserDefaults.standard.removeObject(forKey: Self.libraryPathDefaultsKey)
+        setLibraryDirectory(presetsDirectory)
+    }
+
+    /// Copies the widgets that ship with the app into the library folder.
+    ///
+    /// Missing entries only: anything the user edited in place is left alone. The bundled copy
+    /// lives inside the app bundle for a packaged build and in the checkout for `swift run`,
+    /// so both are tried before giving up.
+    public func restoreBundledLibrary() {
+        let destination = libraryDirectory
+        guard let source = Self.bundledLibrarySource(excluding: destination) else {
+            status = "The bundled widgets aren’t available in this build — choose a folder instead."
+            return
+        }
+        let fm = FileManager.default
+        do {
+            try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        } catch {
+            status = "That folder isn’t writable. Choose another folder with Choose Folder…"
+            return
+        }
+        var restored = 0
+        do {
+            for entry in try fm.contentsOfDirectory(atPath: source.path) where !entry.hasPrefix(".") {
+                let target = destination.appendingPathComponent(entry)
+                guard !fm.fileExists(atPath: target.path) else { continue }
+                try fm.copyItem(at: source.appendingPathComponent(entry), to: target)
+                restored += 1
+            }
+        } catch {
+            status = "Could not restore the bundled widgets: \(error.localizedDescription)"
+            return
+        }
+        loadCatalog()
+        autoSelectIfNeeded()
+        status = restored == 0
+            ? "Bundled widgets were already in place — re-read \(catalog.presets.count)."
+            : "Restored \(restored) bundled item\(restored == 1 ? "" : "s")."
+    }
+
+    /// Everything support would ask for, on the clipboard in one step.
+    public func copyLibraryDiagnostics() {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        let report = """
+        Wijeti library diagnostics
+        App: \(version ?? "development build") (\(build ?? "no build number"))
+        macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)
+        Library folder: \(libraryDirectory.path)
+        Library readable: \(FileManager.default.isReadableFile(atPath: libraryDirectory.path))
+        Catalog.json: \(FileManager.default.fileExists(atPath: libraryDirectory.appendingPathComponent("Catalog.json").path))
+        Presets found: \(catalog.presets.count)
+        Reported problem: \(catalogProblem ?? "none")
+        Widgets folder: \(host.widgetDirectoryURL.path)
+        Installed widgets: \(installed.count) (\(visibleCount) visible)
+        """
+        let board = NSPasteboard.general
+        board.clearContents()
+        board.setString(report, forType: .string)
+        status = "Diagnostics copied to the clipboard."
+    }
+
+    /// The folder holding the widgets that ship with the app, when it is a different folder
+    /// from the one being repaired.
+    private static func bundledLibrarySource(excluding destination: URL) -> URL? {
+        var candidates: [URL] = []
+        if let resources = Bundle.main.resourceURL {
+            candidates.append(resources.appendingPathComponent("presets", isDirectory: true))
+        }
+        if let dev = ProcessInfo.processInfo.environment["WIJETI_PRESETS_DIR"] {
+            candidates.append(URL(fileURLWithPath: dev))
+        }
+        return candidates.first { url in
+            url.canonicalPathURL != destination.canonicalPathURL
+                && FileManager.default.fileExists(
+                    atPath: url.appendingPathComponent("Catalog.json").path
+                )
+        }
     }
 
     // MARK: - Preview selection
@@ -355,7 +511,8 @@ public final class WidgetLibraryModel: ObservableObject {
     public func select(_ preset: Preset) {
         selectedCustomFolder = nil
         selectedPreset = preset
-        previewController.show(preset, from: presetsDirectory)
+        previewFailed = false
+        previewController.show(preset, from: libraryDirectory)
     }
 
     /// First run of the window: pick something so the pane is never dead space.
@@ -367,7 +524,16 @@ public final class WidgetLibraryModel: ObservableObject {
     /// Re-issues the current selection after a stop (the window was closed).
     public func resumePreview() {
         guard let preset = selectedPreset else { return }
-        previewController.show(preset, from: presetsDirectory)
+        previewController.show(preset, from: libraryDirectory)
+    }
+
+    /// Re-issues the selection after a failed start, without disturbing the rest of the window.
+    public func retryPreview() {
+        guard let preset = selectedPreset else { return }
+        previewFailed = false
+        previewReady = false
+        previewStatus = "Starting preview…"
+        previewController.show(preset, from: libraryDirectory)
     }
 
     public func stopPreview() {
@@ -378,13 +544,13 @@ public final class WidgetLibraryModel: ObservableObject {
     /// (mirrors `server/src/resolveWidget.js`), used to probe the rendered element.
     public var previewServerWidgetID: String? {
         guard let preset = selectedPreset else { return nil }
-        let base = presetsDirectory.appendingPathComponent(preset.id)
+        let base = libraryDirectory.appendingPathComponent(preset.id)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: base.path, isDirectory: &isDirectory) else {
             return nil
         }
         let entry = isDirectory.boolValue ? base.appendingPathComponent(preset.entry) : base
-        return WidgetImporter.widgetID(for: entry, root: presetsDirectory)
+        return WidgetImporter.widgetID(for: entry, root: libraryDirectory)
     }
 
     /// Re-reads the bundled catalog and everything that derives from the server's state.
@@ -451,6 +617,12 @@ public final class WidgetLibraryModel: ObservableObject {
         return bundled + custom
     }
 
+    /// How many widgets the gallery lists for a category — the sidebar's counts.
+    public func countForCategory(_ category: String) -> Int {
+        catalog.presets.filter { $0.category == category }.count
+            + customWidgets.filter { ($0.category ?? "Other") == category }.count
+    }
+
     /// Every category a user can file an imported widget under.
     public var assignableCategories: [String] {
         var all = PresetCatalog.preferredOrder
@@ -465,6 +637,8 @@ public final class WidgetLibraryModel: ObservableObject {
 
     public var filteredCustomWidgets: [Installed] {
         let needle = search.lowercased()
+        // Imported widgets are installed by definition, so "Free to Add" excludes them.
+        guard installFilter != .available else { return [] }
         return customWidgets.filter { widget in
             (selectedCategory == nil || widget.category == selectedCategory)
                 && (needle.isEmpty || widget.title.lowercased().contains(needle))
@@ -602,6 +776,11 @@ public final class WidgetLibraryModel: ObservableObject {
         if let selectedCategory {
             presets = presets.filter { $0.category == selectedCategory }
         }
+        switch installFilter {
+        case .all: break
+        case .onDesktop: presets = presets.filter { isInstalled($0) }
+        case .available: presets = presets.filter { !isInstalled($0) }
+        }
         if !search.isEmpty {
             let needle = search.lowercased()
             presets = presets.filter {
@@ -637,7 +816,7 @@ public final class WidgetLibraryModel: ObservableObject {
 
     /// Copies a bundled preset into the widget directory and reveals it.
     public func install(_ preset: Preset) {
-        let source = presetsDirectory.appendingPathComponent(preset.id)
+        let source = libraryDirectory.appendingPathComponent(preset.id)
         guard bundledPresetExists(preset.id) else {
             status = "\(preset.title) is missing from the bundled library."
             return
@@ -725,7 +904,7 @@ public final class WidgetLibraryModel: ObservableObject {
                 failed.append(preset.title)
                 continue
             }
-            if let result = try? importer.importWidgets(at: [presetsDirectory.appendingPathComponent(preset.id)]),
+            if let result = try? importer.importWidgets(at: [libraryDirectory.appendingPathComponent(preset.id)]),
                !result.installed.isEmpty {
                 installed += 1
                 for id in result.installed { host.updateSettings(id) { $0.hidden = false } }
@@ -860,7 +1039,7 @@ public final class WidgetLibraryModel: ObservableObject {
 
     /// The preset's folder, or its bare `.jsx` file when the preset is a single file.
     public func sourceRoot(for preset: Preset) -> URL {
-        presetsDirectory.appendingPathComponent(preset.id)
+        libraryDirectory.appendingPathComponent(preset.id)
     }
 
     /// The file an editor should open: the entry file inside a widget folder, or the preset
@@ -939,7 +1118,7 @@ public final class WidgetLibraryModel: ObservableObject {
 
     /// True when the bundled preset exists in the presets directory (library source).
     private func bundledPresetExists(_ id: String) -> Bool {
-        FileManager.default.fileExists(atPath: presetsDirectory.appendingPathComponent(id).path)
+        FileManager.default.fileExists(atPath: libraryDirectory.appendingPathComponent(id).path)
     }
 
     /// True when a widget is already installed (lives in the widget directory).

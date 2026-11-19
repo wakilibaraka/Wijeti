@@ -6,12 +6,14 @@ export const refreshFrequency = 3600000;
 
 export const className = `
   position: fixed;
-  top: 16%;
-  left: 0;
-  right: 0;
-  width: 400px;
+  /* Was a full-width band at 16%, which collided with the clock and the welcome card.
+     It now lives in the free slot on the left rail. */
+  top: 24%;
+  left: 24px;
+  right: auto;
+  width: 300px;
   box-sizing: border-box;
-  margin: auto;
+  margin: 0;
   padding: 18px 22px;
   text-align: center;
   background: rgba(18, 18, 22, 0.55);

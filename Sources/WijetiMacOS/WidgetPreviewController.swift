@@ -13,6 +13,10 @@ final class WidgetPreviewController {
 
     var onStatus: ((String) -> Void)?
     var onReadyChange: ((Bool) -> Void)?
+    /// Called when the preview cannot be shown at all (missing preset, scratch directory
+    /// failure, page load failure). The pane turns this into an explained state with a retry,
+    /// rather than showing an endless "Preparing preview…".
+    var onFailure: ((String) -> Void)?
 
     private let platform: AppKitPlatform
     private let loginShell: () -> Bool
@@ -51,7 +55,9 @@ final class WidgetPreviewController {
     func show(_ preset: Preset, from presetsDirectory: URL) {
         let source = presetsDirectory.appendingPathComponent(preset.id)
         guard FileManager.default.fileExists(atPath: source.path) else {
-            onStatus?("Preset missing: \(preset.id)")
+            let message = "\(preset.title) is missing from the library folder."
+            onStatus?(message)
+            onFailure?(message)
             return
         }
         selectedID = preset.id
@@ -60,7 +66,9 @@ final class WidgetPreviewController {
             try prepareScratchDirectories()
             try copyPreset(named: preset.id, from: source)
         } catch {
-            onStatus?("Preview failed: \(error.localizedDescription)")
+            let message = "Preview failed: \(error.localizedDescription)"
+            onStatus?(message)
+            onFailure?(message)
             return
         }
         if supervisor != nil, let port {
@@ -133,7 +141,9 @@ final class WidgetPreviewController {
             self.onStatus?("Previewing \(self.selectedTitle)")
         }
         webViewController.onLoadFailure = { [weak self] error in
-            self?.onStatus?("Preview couldn't load: \(error.localizedDescription)")
+            let message = "Preview couldn't load: \(error.localizedDescription)"
+            self?.onStatus?(message)
+            self?.onFailure?(message)
         }
         webViewController.load(url: URL(string: "http://127.0.0.1:\(port)/1/foreground")!)
     }
